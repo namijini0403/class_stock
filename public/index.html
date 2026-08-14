@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="우리학교 투자" />
+  <title>우리학교 모의투자</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="우리학교 모의투자 홈">
+        <span class="brand-mark">M</span>
+        <span>우리학교 모의투자</span>
+      </a>
+      <div class="topbar-actions">
+        <span id="marketMode" class="market-mode">연결 중</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section id="welcome" class="welcome-panel">
+      <div class="welcome-copy">
+        <div class="product-label">학교용 모의투자</div>
+        <h1>공식 기준가격으로 배우는<br />나의 첫 투자 기록</h1>
+        <p>실제 돈은 사용하지 않습니다. 투자 기록은 이 기기에 PIN으로 암호화해 저장합니다.</p>
+      </div>
+
+      <div class="welcome-card">
+        <div id="savedBox" class="saved-box hidden">
+          <div>
+            <span class="saved-kicker">이 기기의 저장 기록</span>
+            <strong id="savedLabel">저장된 투자 기록</strong>
+          </div>
+          <button id="continueBtn" class="btn btn-primary">이어하기</button>
+        </div>
+
+        <button id="newBtn" class="btn btn-primary btn-block btn-large">새 계좌 만들기</button>
+        <button id="importBtn" class="btn btn-secondary btn-block">백업 파일 불러오기</button>
+        <input id="importFile" type="file" accept=".stocksave,.json" hidden />
+
+        <div class="notice">PIN은 서버로 전송되지 않습니다. 교사가 지급·차감한 금액은 접속 중 자동 반영됩니다.</div>
+        <a class="text-link" href="/teacher.html">교사용 관리 화면</a>
+      </div>
+    </section>
+
+    <section id="app" class="app-shell hidden">
+      <div class="account-bar">
+        <div>
+          <div id="profileClass" class="account-class">-</div>
+          <strong id="profileName" class="account-name">-</strong>
+        </div>
+        <button id="lockBtn" class="btn btn-quiet btn-small">잠그기</button>
+      </div>
+
+      <section id="tab-home" class="tabpage">
+        <div class="asset-hero">
+          <div class="asset-label">총 자산</div>
+          <div id="totalAsset" class="asset-value">0원</div>
+          <div id="totalRate" class="asset-rate flat">0.00%</div>
+
+          <div class="asset-breakdown">
+            <div>
+              <span>보유 현금</span>
+              <strong id="cash">0원</strong>
+              <small id="teacherNet">교사 지급·차감 0원</small>
+            </div>
+            <div>
+              <span>평가손익</span>
+              <strong id="unrealized">0원</strong>
+              <small id="realized">실현손익 0원</small>
+            </div>
+          </div>
+        </div>
+
+        <section class="content-section">
+          <div class="section-title-row">
+            <div>
+              <h2>내 주식</h2>
+              <p>보유 중인 종목을 빠르게 확인합니다.</p>
+            </div>
+            <button class="text-button tab-jump" data-go="portfolio">전체 보기</button>
+          </div>
+          <div id="homeHoldings" class="compact-list"></div>
+        </section>
+
+        <section class="content-section">
+          <div class="section-title-row">
+            <div>
+              <h2>주요 종목</h2>
+              <p>종목을 누르면 공식 기준가격과 관련 뉴스를 확인할 수 있습니다.</p>
+            </div>
+            <button class="text-button tab-jump" data-go="market">종목 찾기</button>
+          </div>
+          <div id="homeMarketList" class="compact-list"></div>
+        </section>
+      </section>
+
+      <section id="tab-market" class="tabpage hidden">
+        <div class="page-heading">
+          <h1>주식</h1>
+          <p id="priceStatus">종목 목록을 불러오는 중입니다.</p>
+        </div>
+
+        <div class="search-panel">
+          <div class="search-box">
+            <span class="search-icon" aria-hidden="true"></span>
+            <input id="search" class="search-input" placeholder="회사명 · 종목코드 · 미국 티커 검색" autocomplete="off" />
+          </div>
+          <select id="marketFilter" class="market-select" aria-label="시장 선택">
+            <option value="">전체 시장</option>
+            <option value="KR">한국 전체</option>
+            <option value="US">미국 전체</option>
+            <option value="KOSPI">코스피</option>
+            <option value="KOSDAQ">코스닥</option>
+            <option value="NASDAQ">나스닥</option>
+            <option value="NYSE">뉴욕증권거래소</option>
+            <option value="AMEX">아멕스</option>
+          </select>
+        </div>
+
+        <div class="market-note">국내는 금융위원회 공공데이터의 전 영업일 시세, 미국은 IEX Exchange HIST 참고가격을 사용합니다. 각 종목에 출처와 기준일을 표시합니다.</div>
+        <div id="stockGrid" class="stock-list"></div>
+        <div id="searchMore" class="search-more hidden"><button id="moreBtn" class="btn btn-secondary">검색 결과 더 보기</button></div>
+      </section>
+
+      <section id="tab-portfolio" class="tabpage hidden">
+        <div class="page-heading heading-with-action">
+          <div>
+            <h1>내 자산</h1>
+            <p>현재 저장된 공식 지연 기준가격으로 계산한 평가금액입니다.</p>
+          </div>
+          <button id="refreshPortfolio" class="btn btn-secondary btn-small">새로고침</button>
+        </div>
+        <div id="portfolioList" class="portfolio-list"></div>
+      </section>
+
+      <section id="tab-history" class="tabpage hidden">
+        <div class="page-heading">
+          <h1>거래 기록</h1>
+          <p>주식 거래, 수수료, 교사 지급·차감, 기업행동 기록을 함께 확인합니다.</p>
+        </div>
+        <div class="history-mobile" id="historyCards"></div>
+        <div class="table-wrap history-table-wrap">
+          <table>
+            <thead><tr><th>시간</th><th>내용</th><th>구분</th><th>수량</th><th>가격</th><th>금액</th><th>메모/사유</th></tr></thead>
+            <tbody id="historyBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-settings" class="tabpage hidden">
+        <div class="page-heading"><h1>MY</h1><p>학급 정보와 저장 설정을 관리합니다. 미국주식은 자동 USD/KRW 환율을 기본으로 원화 자산에 합산되며, 학교 관리자가 원하면 수동 환율로 전환할 수 있습니다.</p></div>
+
+        <article class="settings-section">
+          <h2>학급 정보</h2>
+          <p>학년이 올라가거나 반이 바뀌면 수정하세요.</p>
+          <div class="form-grid compact-form">
+            <label>학년<input id="setGrade" inputmode="numeric" maxlength="2" /></label>
+            <label>반<input id="setClass" inputmode="numeric" maxlength="2" /></label>
+          </div>
+          <button id="updateClassBtn" class="btn btn-primary">학급 정보 변경</button>
+        </article>
+
+        <article class="settings-section">
+          <h2>저장과 백업</h2>
+          <p>거래와 교사 지급·차감이 반영될 때마다 자동 저장됩니다.</p>
+          <div class="settings-actions">
+            <button id="backupBtn" class="btn btn-primary">백업 파일 저장</button>
+            <button id="verifyBtn" class="btn btn-secondary">세이브 무결성 확인</button>
+            <button id="installAppBtn" class="btn btn-secondary hidden">이 기기에 앱 설치</button>
+            <button id="deleteBtn" class="btn btn-danger">이 기기의 기록 삭제</button>
+          </div>
+          <div class="save-info" id="saveInfo"></div>
+        </article>
+
+        <article class="settings-section">
+          <h2>시세 출처</h2>
+          <p>국내: 금융위원회 주식시세정보 공공데이터 · 미국: IEX Exchange HIST. 화면의 기준일을 확인한 뒤 거래합니다.</p>
+          <p class="muted">미국 시세 출처표시: Data provided for free by IEX · <a href="https://www.iex.io/legal/hist-data-terms" target="_blank" rel="noopener noreferrer">IEX Historical Data Terms</a></p>
+        </article>
+
+        <article class="settings-section">
+          <h2>교사용</h2>
+          <p>교사 지급·차감, 수수료, 기업행동과 학급 관리는 별도 관리자 화면에서 합니다.</p>
+          <a class="btn btn-secondary inline-button" href="/teacher.html">교사용 관리 화면 열기</a>
+        </article>
+      </section>
+
+      <nav class="bottom-nav" aria-label="주요 메뉴">
+        <button class="tab active" data-tab="home"><span class="nav-glyph nav-home"></span><span>홈</span></button>
+        <button class="tab" data-tab="market"><span class="nav-glyph nav-search"></span><span>주식</span></button>
+        <button class="tab" data-tab="portfolio"><span class="nav-glyph nav-wallet"></span><span>자산</span></button>
+        <button class="tab" data-tab="history"><span class="nav-glyph nav-list"></span><span>기록</span></button>
+        <button class="tab" data-tab="settings"><span class="nav-glyph nav-user"></span><span>MY</span></button>
+      </nav>
+    </section>
+  </main>
+
+  <dialog id="newDialog">
+    <form method="dialog" class="dialog-form account-dialog">
+      <button class="dialog-close" value="cancel" aria-label="닫기">×</button>
+      <div class="dialog-heading"><span>새 계좌</span><h2>100만원으로 시작합니다</h2><p>학생 정보와 4자리 PIN을 입력하세요.</p></div>
+      <div class="two-col"><label>학년<input id="grade" inputmode="numeric" maxlength="2" placeholder="4" required /></label><label>반<input id="classNo" inputmode="numeric" maxlength="2" placeholder="3" required /></label></div>
+      <label>학생 번호<input id="studentNo" inputmode="numeric" maxlength="4" placeholder="12" required /></label>
+      <label>이름<input id="studentName" maxlength="30" placeholder="홍길동" required /></label>
+      <label>4자리 PIN<input id="newPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="••••" required /></label>
+      <label>PIN 확인<input id="newPin2" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="••••" required /></label>
+      <button id="createAccountBtn" type="button" class="btn btn-primary btn-block btn-large">계좌 만들기</button>
+    </form>
+  </dialog>
+
+  <dialog id="pinDialog">
+    <form method="dialog" class="dialog-form pin-dialog">
+      <button class="dialog-close" value="cancel" aria-label="닫기">×</button>
+      <div class="dialog-heading"><span>저장 기록</span><h2>PIN 입력</h2><p id="pinLabel">4자리 PIN을 입력하세요.</p></div>
+      <label>PIN<input id="loadPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="••••" /></label>
+      <button id="unlockBtn" type="button" class="btn btn-primary btn-block btn-large">불러오기</button>
+    </form>
+  </dialog>
+
+  <dialog id="tradeDialog" class="stock-dialog">
+    <div class="stock-detail">
+      <div class="stock-detail-top">
+        <button class="dialog-close stock-close" id="tradeClose" aria-label="닫기">×</button>
+        <div class="stock-identity">
+          <span id="tradeMarket">-</span>
+          <h2 id="tradeName">-</h2>
+          <small id="tradeCode">-</small>
+        </div>
+        <div class="stock-quote">
+          <strong id="tradePrice">시세 확인 중</strong>
+          <span id="tradeChange" class="flat">-</span><small id="tradeSource" class="quote-source"></small>
+        </div>
+      </div>
+
+      <div id="tradeStatus" class="trade-status hidden"></div>
+
+      <div class="holding-summary">
+        <div><span>보유 현금</span><strong id="tradeCash">0원</strong></div>
+        <div><span>보유 수량</span><strong id="tradeOwned">0주</strong></div>
+      </div>
+
+      <div class="order-panel">
+        <div class="trade-tabs">
+          <button id="buyTab" class="trade-tab buy active">매수</button>
+          <button id="sellTab" class="trade-tab sell">매도</button>
+        </div>
+
+        <label class="field-label">수량<input id="tradeQty" type="number" min="1" step="1" value="1" /></label>
+        <div class="quick-qty"><button data-q="1">1주</button><button data-q="5">5주</button><button data-q="10">10주</button><button data-q="max">최대</button></div>
+
+        <div class="estimate-box">
+          <span>수수료 포함 예상 금액</span>
+          <strong id="estimate">0원</strong>
+          <small id="feeEstimate"></small>
+        </div>
+
+        <label class="field-label">투자 메모 <span class="optional">선택 · 80자</span><textarea id="tradeComment" maxlength="80" rows="2" placeholder="왜 사고파는지 짧게 남겨보세요."></textarea></label>
+        <button id="tradeSubmit" class="btn btn-buy btn-block btn-large">매수하기</button>
+      </div>
+
+      <section class="news-panel">
+        <div class="news-head"><h3>관련 뉴스</h3><small id="newsHint">관련 뉴스 · 원문 링크</small></div>
+        <div id="newsList" class="news-list"><div class="news-empty">종목을 열면 관련 뉴스를 불러옵니다.</div></div>
+      </section>
+    </div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "school-stock-mobile-wrapper",
+  "private": true,
+  "scripts": {
+    "setup": "npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/ios",
+    "android:add": "npx cap add android",
+    "android:open": "npx cap open android",
+    "ios:add": "npx cap add ios",
+    "ios:open": "npx cap open ios"
+  }
+}

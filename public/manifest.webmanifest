@@ -1,0 +1,15 @@
+{
+  "name": "우리학교 모의투자",
+  "short_name": "모의투자",
+  "description": "초등학교 고학년용 한국·미국 실제 주식 시세 기반 모의투자",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f6f8",
+  "theme_color": "#ffffff",
+  "lang": "ko-KR",
+  "icons": [
+    {"src":"/icons/icon-192.png","sizes":"192x192","type":"image/png"},
+    {"src":"/icons/icon-512.png","sizes":"512x512","type":"image/png"}
+  ]
+}

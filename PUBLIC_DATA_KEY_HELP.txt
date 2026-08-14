@@ -1,0 +1,9 @@
+If SET_PUBLIC_DATA_KEY.cmd does not run:
+
+1. Open Notepad.
+2. Paste this single line:
+   PUBLIC_DATA_SERVICE_KEY=YOUR_KEY_HERE
+3. Save the file as PUBLIC_DATA_KEY.txt in this folder.
+4. Run START_HERE.cmd.
+
+Do not send your service key to anyone.

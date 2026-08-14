@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#ffffff" />
+  <title>우리학교 모의투자 | 교사 관리</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="toast" class="toast"></div>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/teacher.html"><span class="brand-mark">T</span><span>교사 관리</span></a>
+    <a class="btn btn-secondary btn-small" href="/">학생 화면</a>
+  </div>
+</header>
+
+<main class="admin-shell">
+  <section id="loginBox" class="card teacher-login">
+    <div class="dialog-heading"><span>Teacher</span><h1>교사 로그인</h1><p>담임 계정 또는 학교 관리자 계정으로 로그인하세요.</p></div>
+    <label>교사 아이디<input id="teacherId" autocomplete="username" placeholder="예: g5c2 또는 admin" /></label>
+    <label>비밀번호<input id="teacherPassword" type="password" autocomplete="current-password" /></label>
+    <button id="loginBtn" class="btn btn-primary btn-block btn-large">로그인</button>
+    <p class="muted">학교 관리자는 아이디 <b>admin</b>과 .env의 ADMIN_PASSWORD를 사용합니다.</p>
+  </section>
+
+  <section id="teacherApp" class="teacher-dashboard hidden">
+    <div class="teacher-head">
+      <div><div class="eyebrow">교사용 관리 화면</div><h1 id="actorName">-</h1><div id="actorScope" class="muted"></div></div>
+      <button id="logoutBtn" class="btn btn-quiet btn-small">로그아웃</button>
+    </div>
+
+    <article class="card command-box">
+      <div class="section-head">
+        <div><h2>학생 선택</h2><p>학급 학생을 선택한 뒤 지급·차감 명령을 보낼 수 있습니다.</p></div>
+        <div id="adminScope" class="teacher-controls hidden"><label>학년<input id="scopeGrade" inputmode="numeric" maxlength="2" /></label><label>반<input id="scopeClass" inputmode="numeric" maxlength="2" /></label><button id="loadClassBtn" class="btn btn-secondary btn-small">학급 불러오기</button></div>
+      </div>
+      <div class="teacher-controls"><button id="selectAllBtn" class="btn btn-secondary btn-small">전체 선택</button><button id="clearAllBtn" class="btn btn-quiet btn-small">선택 해제</button><span id="selectionInfo" class="muted">0명 선택</span></div>
+      <div id="roster" class="roster-grid"></div>
+    </article>
+
+    <article class="card command-box">
+      <div class="section-head"><div><h2>돈 지급·차감</h2><p>금액과 사유를 기록합니다. 학생의 다음 동기화 때 자동 반영됩니다.</p></div></div>
+      <div class="command-row">
+        <label>구분<select id="commandType"><option value="GIVE">지급</option><option value="TAKE">차감</option></select></label>
+        <label>금액<input id="commandAmount" inputmode="numeric" placeholder="예: 100000" /></label>
+        <div></div>
+      </div>
+      <div class="command-row" style="margin-top:10px;grid-template-columns:1fr auto">
+        <label>지급·차감 사유 <span class="optional">필수 · 120자</span><input id="commandReason" maxlength="120" placeholder="예: 학급 활동 보상, 학급 매점 사용" /></label>
+        <button id="sendCommandBtn" class="btn btn-primary">선택 학생에게 적용</button>
+      </div>
+      <p class="muted">차감액이 학생의 보유 현금보다 많으면 주식을 강제로 매도하지 않고 현금은 0원까지만 차감합니다.</p>
+    </article>
+
+    <article class="card command-box">
+      <div class="section-head"><div><h2>지급·차감 기록</h2><p>기록은 삭제하지 않고 취소 또는 반대 거래로 남깁니다.</p></div><button id="refreshCommandsBtn" class="btn btn-secondary btn-small">새로고침</button></div>
+      <div class="table-wrap"><table class="command-table"><thead><tr><th>시간</th><th>학생</th><th>금액</th><th>사유</th><th>상태</th><th>관리</th></tr></thead><tbody id="commandBody"></tbody></table></div>
+    </article>
+
+    <article id="adminMarketData" class="card teacher-admin-card hidden">
+      <div class="section-head"><div><h2>시세 데이터 상태</h2><p>국내 공공데이터와 미국 IEX HIST의 마지막 기준일을 확인합니다.</p></div></div>
+      <div id="marketDataStatus" class="market-note">시세 상태를 불러오는 중입니다.</div>
+      <div class="teacher-controls" style="margin-top:12px">
+        <button id="refreshKrMarketBtn" class="btn btn-primary btn-small">국내 공공데이터 새로 확인</button>
+        <button id="reloadUsMarketBtn" class="btn btn-secondary btn-small">IEX 변환파일 다시 읽기</button>
+      </div>
+      <p class="muted">미국 IEX HIST 원본은 대용량 PCAP이므로 관리자 PC에서 변환한 캐시를 사용합니다. 데이터가 없으면 미국주식 거래는 자동으로 차단됩니다.</p>
+    </article>
+
+    <article id="adminMarketSettings" class="card teacher-admin-card hidden">
+      <div class="section-head"><div><h2>시장 설정</h2><p>수업용 거래 수수료와 미국주식 원화 환산에 사용할 환율을 조절합니다.</p></div></div>
+      <div class="teacher-controls"><label>거래 수수료율 (%)<input id="feeRatePct" type="number" min="0" max="1" step="0.001" placeholder="0.1" /></label><button id="saveFeeBtn" class="btn btn-primary btn-small">수수료 저장</button><span id="feeCurrent" class="muted"></span></div>
+      <div class="teacher-controls" style="margin-top:12px">
+        <label>환율 적용 방식
+          <select id="fxMode"><option value="AUTO">자동 환율</option><option value="MANUAL">관리자 수동 환율</option></select>
+        </label>
+        <label>수동 환율 (1 USD = 원)<input id="usdKrwRate" type="number" min="500" max="3000" step="0.01" placeholder="1400" /></label>
+        <button id="saveFxBtn" class="btn btn-primary btn-small">환율 설정 저장</button>
+        <button id="refreshFxBtn" class="btn btn-secondary btn-small">자동 환율 새로고침</button>
+      </div>
+      <p id="fxCurrent" class="muted"></p>
+      <p class="muted">기본은 자동 환율입니다. 필요할 때만 수동 환율로 바꿀 수 있습니다. 미국주식은 달러 시세를 적용 환율로 원화 환산하며 실제 환전 주문은 발생하지 않습니다.</p>
+    </article>
+
+    <article id="adminCorporate" class="card teacher-admin-card hidden">
+      <div class="section-head"><div><h2>기업행동 관리</h2><p>거래정지·회사명 변경 등 자동 감지 결과를 확인하고, 합병·코드 변경처럼 공식 비율이 필요한 사건은 직접 등록합니다.</p></div><button id="refreshActionsBtn" class="btn btn-secondary btn-small">새로고침</button></div>
+      <div class="corporate-grid">
+        <label>유형<select id="caType"><option value="SPLIT">주식분할</option><option value="REVERSE_SPLIT">주식병합</option><option value="CODE_CHANGE">종목코드 변경</option><option value="MERGER">기업 합병</option><option value="RENAME">회사명 변경</option><option value="HALT">거래정지</option><option value="RESUME">거래재개</option><option value="DELIST">상장폐지</option></select></label>
+        <label>기존 종목코드<input id="caOldCode" maxlength="50" placeholder="005930 또는 AAPL" /></label>
+        <label>새 종목코드<input id="caNewCode" maxlength="50" placeholder="예: MSFT / 필요할 때만" /></label>
+        <label>적용일<input id="caDate" type="date" /></label>
+        <label>새 주식 수(분자)<input id="caRatioNum" type="number" min="0.000001" step="0.000001" value="1" /></label>
+        <label>기존 주식 수(분모)<input id="caRatioDen" type="number" min="0.000001" step="0.000001" value="1" /></label>
+        <label>단주 정산가격(원화 환산 기준)<input id="caSettlement" type="number" min="0" step="1" placeholder="필요 시" /></label>
+        <label>주당 현금지급(원화)<input id="caCashPerShare" type="number" min="0" step="1" placeholder="필요 시" /></label>
+        <label class="wide">설명<input id="caNote" maxlength="200" placeholder="예: 1주를 5주로 액면분할 / 공식 공시의 합병 교환비율 확인" /></label>
+        <div><button id="createActionBtn" class="btn btn-primary">기업행동 등록</button></div>
+      </div>
+      <p class="muted">비율은 ‘기존 1주당 새 주식 몇 주인가’를 분수로 입력합니다. 1주→5주는 5/1, 5주→1주는 1/5입니다. 미국주식은 AAPL처럼 티커를 입력할 수 있습니다.</p>
+      <div id="actionList"></div>
+    </article>
+
+    <article id="adminTeachers" class="card teacher-admin-card hidden">
+      <div class="section-head"><div><h2>담임 교사 계정</h2><p>담임 계정은 지정된 학년·반 학생만 조회하고 지급·차감할 수 있습니다.</p></div></div>
+      <div class="teacher-controls"><label>아이디<input id="newTeacherId" placeholder="예: g5c2" /></label><label>이름<input id="newTeacherName" placeholder="예: 5-2 담임" /></label><label>학년<input id="newTeacherGrade" inputmode="numeric" /></label><label>반<input id="newTeacherClass" inputmode="numeric" /></label><label>비밀번호<input id="newTeacherPassword" type="password" /></label><button id="createTeacherBtn" class="btn btn-primary btn-small">계정 저장</button></div>
+      <div id="teacherList" class="teacher-list"></div>
+    </article>
+  </section>
+</main>
+<script src="/teacher.js"></script>
+</body>
+</html>

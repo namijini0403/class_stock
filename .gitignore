@@ -1,0 +1,28 @@
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+ADMIN_PASSWORD.txt
+PUBLIC_DATA_KEY.txt
+
+# Student/class data and runtime-generated caches
+data/server-data.json
+data/kr-public-prices.json
+iex-hist-inbox/
+
+# Bundled/runtime artifacts and logs
+runtime/
+startup-log.txt
+*.log
+
+# Dependencies and generated mobile builds
+node_modules/
+mobile/node_modules/
+mobile/android/
+mobile/ios/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

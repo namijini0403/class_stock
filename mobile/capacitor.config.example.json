@@ -1,0 +1,9 @@
+{
+  "appId": "kr.school.mockstock",
+  "appName": "우리학교 모의투자",
+  "webDir": "../public",
+  "server": {
+    "url": "https://여기에-학교-모의투자-서버-주소를-입력하세요",
+    "cleartext": false
+  }
+}
