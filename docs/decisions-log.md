@@ -57,3 +57,9 @@
 - 이유: `applyTrade`·`applyCorporateActions`·`applyTeacherCommands` 세 상태 엔진이 상태 객체 전체를 `structuredClone`으로 소비·반환하도록 이미 짜여 있다. JSONB 컬럼이면 load→apply→save 트랜잭션으로 세 엔진을 그대로(수정 없이) 재사용할 수 있다. 정규화하면 세 엔진 전부를 다시 쓰고 다중 테이블 트랜잭션 쓰기를 도입해야 하는데, 교실 규모(학급당 최대 약 40명, 상태 크기 최대 약 1MB, 거래 1500건 상한이 이미 있음)에서는 쿼리 이득이 전혀 없다. 명렬 요약은 Node에서 한 학급 분 행만으로 계산하고, 단일 행 `SELECT ... FOR UPDATE`가 학생별 직렬화를 공짜로 제공한다.
 - 영향 범위: `lib/db.js`(students 스키마), `server.js`의 거래·기업행동·교사명령 엔드포인트(Task 5+).
 - 폐기 조건: 학급 규모가 크게 늘거나(예: 학교 전체 동시접속) JSONB 행 단위 잠금이 병목이 되면 재검토.
+
+### 교사 로그인은 개인 비밀번호 OR 학교 공통 초기 비밀번호 (2026-08-16, 사용자 명시)
+- 결정: `TEACHER_MASTER_PASSWORD`(선택, 8자 이상)를 설정하면 모든 담임 교사 계정이 개인 비밀번호와 학교 공통 초기 비밀번호 둘 다로 로그인할 수 있다(관리자 계정은 제외, ADMIN_PASSWORD만 사용).
+- 이유: 담임 교사가 개인 비밀번호를 분실했을 때 관리자 개입 없이 즉시 복구하기 위함 — 사용자 지시.
+- 영향 범위: `server.js`(`/api/teacher/login`, `/api/teacher/password`), `public/teacher.html`·`teacher.js`(비밀번호 변경 UI), `.env.example`, `README.md`.
+- 폐기 조건: 없음.

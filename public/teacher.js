@@ -133,6 +133,11 @@ async function saveClassSettings(code){
   }catch(e){toast(e.message)}
 }
 
+async function changePassword(){
+  const currentPassword=$('#curPw').value,newPassword=$('#newPw').value;
+  if(newPassword.length<8)return toast('새 비밀번호는 8자 이상으로 입력하세요.');
+  try{await api('/api/teacher/password',{method:'POST',body:JSON.stringify({currentPassword,newPassword})});toast('비밀번호가 변경되었습니다.');$('#curPw').value='';$('#newPw').value=''}catch(e){toast(e.message)}
+}
 async function login(){try{const d=await api('/api/teacher/login',{method:'POST',body:JSON.stringify({id:$('#teacherId').value.trim(),password:$('#teacherPassword').value})});token=d.token;actor=d.actor;sessionStorage.setItem('teacherToken',token);showApp()}catch(e){toast(e.message)}}
 async function showApp(){
   if(!actor){sessionStorage.removeItem('teacherToken');token='';$('#loginBox').classList.remove('hidden');$('#teacherApp').classList.add('hidden');return}
@@ -146,6 +151,7 @@ async function showApp(){
   $('#adminMarketData').classList.toggle('hidden',actor.role!=='admin');
   $('#adminCorporate').classList.toggle('hidden',actor.role!=='admin');
   $('#classSettingsCard').classList.toggle('hidden',actor.role==='admin');
+  $('#teacherPwCard').classList.toggle('hidden',actor.role==='admin');
   if(actor.role!=='admin'){
     await loadClass();
   }else{
@@ -183,5 +189,5 @@ async function disableTeacher(loginId){
   try{await api(`/api/admin/teachers/${encodeURIComponent(loginId)}/disable`,{method:'POST',body:'{}'});toast('교사 계정을 비활성화했습니다.');await loadTeachers()}catch(e){toast(e.message)}
 }
 
-$('#loginBtn').onclick=login;$('#refreshKrMarketBtn').onclick=refreshKrMarket;$('#reloadUsMarketBtn').onclick=reloadUsMarket;$('#saveFeeBtn').onclick=saveFee;$('#saveFxBtn').onclick=saveFx;$('#refreshFxBtn').onclick=refreshFx;$('#fxMode').onchange=updateFxInput;$('#createActionBtn').onclick=createCorporateAction;$('#refreshActionsBtn').onclick=loadActions;$('#teacherPassword').onkeydown=e=>{if(e.key==='Enter')login()};$('#logoutBtn').onclick=()=>{sessionStorage.removeItem('teacherToken');token='';actor=null;showApp()};$('#loadClassBtn').onclick=loadClass;$('#selectAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=true);updateSelection()};$('#clearAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=false);updateSelection()};$('#sendCommandBtn').onclick=sendCommand;$('#refreshCommandsBtn').onclick=loadCommands;$('#createTeacherBtn').onclick=createTeacher;$('#createClassBtn').onclick=createClass;
+$('#loginBtn').onclick=login;$('#refreshKrMarketBtn').onclick=refreshKrMarket;$('#reloadUsMarketBtn').onclick=reloadUsMarket;$('#saveFeeBtn').onclick=saveFee;$('#saveFxBtn').onclick=saveFx;$('#refreshFxBtn').onclick=refreshFx;$('#fxMode').onchange=updateFxInput;$('#createActionBtn').onclick=createCorporateAction;$('#refreshActionsBtn').onclick=loadActions;$('#teacherPassword').onkeydown=e=>{if(e.key==='Enter')login()};$('#logoutBtn').onclick=()=>{sessionStorage.removeItem('teacherToken');token='';actor=null;showApp()};$('#loadClassBtn').onclick=loadClass;$('#selectAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=true);updateSelection()};$('#clearAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=false);updateSelection()};$('#sendCommandBtn').onclick=sendCommand;$('#refreshCommandsBtn').onclick=loadCommands;$('#createTeacherBtn').onclick=createTeacher;$('#createClassBtn').onclick=createClass;$('#changePwBtn').onclick=changePassword;
 restoreSession();

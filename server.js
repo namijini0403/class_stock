@@ -93,6 +93,11 @@ loadPublicDataKeyFile();
 const PORT = Number(process.env.PORT || 3000);
 const INITIAL_CASH = Number(process.env.INITIAL_CASH || 1000000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+let TEACHER_MASTER_PASSWORD = process.env.TEACHER_MASTER_PASSWORD || '';
+if (TEACHER_MASTER_PASSWORD && TEACHER_MASTER_PASSWORD.length < 8) {
+  console.warn('[주의] TEACHER_MASTER_PASSWORD가 8자 미만이라 무시합니다. 8자 이상으로 설정하세요.');
+  TEACHER_MASTER_PASSWORD = '';
+}
 const PUBLIC_DATA_SERVICE_KEY = process.env.PUBLIC_DATA_SERVICE_KEY || '';
 const PUBLIC_DATA_REFRESH_MS = Math.max(60*60*1000, Number(process.env.PUBLIC_DATA_REFRESH_MS || 10800000));
 const US_SYMBOL_REFRESH_MS = Math.max(6*60*60*1000, Number(process.env.US_SYMBOL_REFRESH_MS || 86400000));
@@ -668,25 +673,49 @@ const server=http.createServer(async(req,res)=>{
       const ah=lockoutHash('teacher', id);
       const lock=await db.checkLockout('teacher', ah);
       if(lock.locked) return sendJson(res,423,{error:`비밀번호를 여러 번 틀려 잠시 잠겼습니다. ${lock.remainingSec}초 후 다시 시도하세요.`});
-      let actor=null;
+      let actor=null, loginMethod=null;
       if(id==='admin'){
         if(ADMIN_PASSWORD&&safeEqual(password,ADMIN_PASSWORD)) actor={id:'admin',name:'학교 관리자',role:'admin',classCode:null};
       } else {
         const r=await db.query('SELECT * FROM teachers WHERE login_id=$1',[id]);
         const t=r.rows[0];
-        if(t&&t.enabled&&await scryptVerify(password,t.pw_scrypt)) actor={id:t.id,name:t.display_name,role:t.role,classCode:t.class_code};
+        if(t&&t.enabled){
+          // 개인 비밀번호를 먼저 검사한 뒤 학교 공통 초기 비밀번호를 검사한다 — 둘 중 무엇이 맞았는지는
+          // 응답(actor)에는 드러내지 않고 감사로그(details.method)에만 남긴다.
+          const personalOk=await scryptVerify(password,t.pw_scrypt);
+          const masterOk=personalOk?false:(TEACHER_MASTER_PASSWORD&&safeEqual(password,TEACHER_MASTER_PASSWORD));
+          if(personalOk||masterOk){ actor={id:t.id,name:t.display_name,role:t.role,classCode:t.class_code}; loginMethod=personalOk?'personal':'master'; }
+        }
       }
       if(!actor){
         await db.recordAuthFail('teacher', ah);
         return sendJson(res,401,{error:'교사 아이디 또는 비밀번호가 올바르지 않습니다.'});
       }
       await db.clearAuthFail('teacher', ah);
-      await db.audit('TEACHER_LOGIN', actor, {});
+      await db.audit('TEACHER_LOGIN', actor, loginMethod?{method:loginMethod}:{});
       const token=signToken({tid:actor.id,role:actor.role,cls:actor.classCode,name:actor.name,typ:'teacher'},43200);
       return sendJson(res,200,{token,actor});
     }
     if(url.pathname.startsWith('/api/teacher/')||url.pathname.startsWith('/api/admin/')){
       const actor=getTeacherActor(req); if(!actor) return sendJson(res,401,{error:'교사 로그인이 필요합니다.'});
+      if(req.method==='POST'&&url.pathname==='/api/teacher/password'){
+        if(actor.role==='admin') return sendJson(res,400,{error:'관리자 비밀번호는 Railway 환경변수(ADMIN_PASSWORD)에서 변경하세요.'});
+        if(!rateLimitOk('pwchange:'+actor.id,5,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
+        const b=await readJson(req,16384); const currentPassword=String(b.currentPassword||''), newPassword=String(b.newPassword||'');
+        if(newPassword.length<8) return sendJson(res,400,{error:'새 비밀번호는 8자 이상으로 입력하세요.'});
+        const r=await db.query('SELECT * FROM teachers WHERE id=$1',[actor.id]);
+        const row=r.rows[0]; if(!row) return sendJson(res,401,{error:'교사 로그인이 필요합니다.'});
+        const personalOk=await scryptVerify(currentPassword,row.pw_scrypt);
+        const masterOk=personalOk?false:(TEACHER_MASTER_PASSWORD&&safeEqual(currentPassword,TEACHER_MASTER_PASSWORD));
+        if(!personalOk&&!masterOk){
+          await db.recordAuthFail('teacher', lockoutHash('teacher', row.login_id));
+          return sendJson(res,403,{error:'현재 비밀번호가 올바르지 않습니다.'});
+        }
+        await db.query('UPDATE teachers SET pw_scrypt=$2, updated_at=now() WHERE id=$1',[row.id, await scryptHash(newPassword)]);
+        await db.clearAuthFail('teacher', lockoutHash('teacher', row.login_id));
+        await db.audit('TEACHER_PASSWORD_CHANGE', actor, {});
+        return sendJson(res,200,{ok:true});
+      }
       if(req.method==='GET'&&url.pathname==='/api/teacher/students'){
         if(actor.role!=='admin'&&!actor.classCode) return sendJson(res,403,{error:'담당 학급이 없습니다. 관리자에게 문의하세요.'});
         const classCode=actorClassCode(actor,url.searchParams.get('classCode'));

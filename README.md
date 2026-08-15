@@ -84,6 +84,7 @@ IEX 가격은 미국 전체 거래소 통합가격이 아니라 IEX Exchange의 
    | `JWT_SECRET` | 32자 이상 무작위 문자열. 생성 예: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
    | `ADMIN_PASSWORD` | 8자 이상 관리자 비밀번호 |
    | `PUBLIC_DATA_SERVICE_KEY` | (선택) 국내 시세를 쓰려면 공공데이터포털 인증키 |
+   | `TEACHER_MASTER_PASSWORD` | (선택) 8자 이상. 설정 시 모든 교사 계정에 개인 비밀번호와 병행해 항상 유효한 학교 공통 초기 비밀번호 |
 
 3. **스키마 자동 생성**
    별도의 마이그레이션 도구 없이, 서버가 부팅할 때 필요한 테이블을 자동으로 생성합니다.
