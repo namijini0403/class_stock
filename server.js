@@ -535,8 +535,18 @@ const server=http.createServer(async(req,res)=>{
         const initialCash=Number(cls.initial_cash ?? INITIAL_CASH);
         state=newState({accountId:id, nickname, classCode, grade:cls.grade, classNo:cls.class_no, initialCash});
         const pinScrypt=await scryptHash(pin);
-        await db.query('INSERT INTO students (id, class_code, nickname, pin_scrypt, state) VALUES ($1,$2,$3,$4,$5)',
-          [id, classCode, nickname, pinScrypt, JSON.stringify(state)]);
+        try {
+          await db.query('INSERT INTO students (id, class_code, nickname, pin_scrypt, state) VALUES ($1,$2,$3,$4,$5)',
+            [id, classCode, nickname, pinScrypt, JSON.stringify(state)]);
+        } catch(e) {
+          // UNIQUE(class_code, nickname) — 동시에 같은 닉네임으로 가입 시도한 경쟁 상황.
+          // 원문 Postgres 오류를 학생에게 노출하지 않고, 로그인으로 자동 전환하지도 않음
+          // (승자의 PIN 해시와 대조 검증된 적이 없으므로).
+          if (e && e.code === '23505') {
+            return sendJson(res,409,{error:'방금 같은 닉네임으로 가입이 완료되었어요. 이미 가입했다면 PIN으로 로그인하고, 아니라면 다른 닉네임을 사용하세요.'});
+          }
+          throw e;
+        }
         epo=0;
       }
 
