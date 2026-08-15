@@ -746,26 +746,47 @@ const server=http.createServer(async(req,res)=>{
       const cancelMatch=url.pathname.match(/^\/api\/teacher\/commands\/([^/]+)\/cancel$/);
       if(req.method==='POST'&&cancelMatch){
         const id=cancelMatch[1];
+        // 사전 조회는 404/403을 빨리 돌려주기 위한 값싼 조기 종료용일 뿐이다. status/reversed_by
+        // 같은 취소 가능 여부 판단은 신뢰하지 않고, 트랜잭션 안에서 FOR UPDATE로 다시 읽어
+        // 그 로우를 기준으로만 판단한다(동시 취소 경합 방지).
         const cRes=await db.query('SELECT * FROM teacher_commands WHERE id=$1',[id]);
         const c=cRes.rows[0]; if(!c) return sendJson(res,404,{error:'명령을 찾을 수 없습니다.'});
         const sRes=await db.query('SELECT id, class_code FROM students WHERE id=$1',[c.student_id]);
         const s=sRes.rows[0]; if(!s||!actorCanManageStudent(actor,s)) return sendJson(res,403,{error:'이 학생을 관리할 권한이 없습니다.'});
-        if(c.status==='CANCELLED') return sendJson(res,400,{error:'이미 취소된 명령입니다.'});
-        if(c.reversed_by) return sendJson(res,400,{error:'이미 취소(반대 거래) 처리된 명령입니다.'});
-        const reversalId=crypto.randomUUID(); const reason='취소: '+c.reason; const amount=-Number(c.applied_amount);
-        let appliedAmount=0, appliedAt=null;
-        await withStudentState(c.student_id, null, async (state, client) => {
-          const {next,results:r}=applyTeacherCommands(state,[{id:reversalId,amount,reason,createdByName:actor.name}]);
-          appliedAmount=r[0].appliedAmount; appliedAt=r[0].appliedAt;
-          // 원본 명령의 reversed_by 갱신까지 같은 트랜잭션에 묶어, 크래시로 상태만 롤백되고
-          // reversed_by는 남는(이중 취소가 가능해지는) 상황을 막는다.
-          await client.query(
-            `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, reversal_of, applied_at)
-             VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,$8,now())`,
-            [reversalId, c.student_id, amount, appliedAmount, reason, actor.id, actor.name, id]);
-          await client.query('UPDATE teacher_commands SET reversed_by=$2 WHERE id=$1',[id, reversalId]);
-          return {state:next};
-        });
+        const reversalId=crypto.randomUUID();
+        let appliedAmount=0, appliedAt=null, reason='', amount=0;
+        try{
+          await withStudentState(c.student_id, null, async (state, client) => {
+            // withStudentState가 이미 학생 로우를 FOR UPDATE로 잠근 뒤 이 콜백을 호출한다.
+            // 같은 명령을 가리키는 동시 취소 요청은 모두 같은 student_id를 가지므로(명령은
+            // 정확히 한 학생 소유) 이 시점에 이미 학생 로우 락으로 직렬화되어 있다. 그 위에
+            // 명령 로우까지 FOR UPDATE로 잠가 이중 방어한다 — 생성 경로는 기존 teacher_commands
+            // 로우를 절대 FOR UPDATE로 잠그지 않고 새 로우만 INSERT하므로, 학생 로우 → 명령
+            // 로우 순서로만 잠그는 이 경로와 반대 순서로 잠그는 코드가 없어 데드락 가능성이 없다.
+            const cLockRes = await client.query('SELECT * FROM teacher_commands WHERE id=$1 FOR UPDATE',[id]);
+            const cLocked = cLockRes.rows[0];
+            if(!cLocked) throw Object.assign(new Error('명령을 찾을 수 없습니다.'),{status:404});
+            if(cLocked.status==='CANCELLED') throw Object.assign(new Error('이미 취소된 명령입니다.'),{status:400});
+            if(cLocked.reversed_by) throw Object.assign(new Error('이미 취소(반대 거래) 처리된 명령입니다.'),{status:400});
+            reason='취소: '+cLocked.reason; amount=-Number(cLocked.applied_amount);
+            const {next,results:r}=applyTeacherCommands(state,[{id:reversalId,amount,reason,createdByName:actor.name}]);
+            appliedAmount=r[0].appliedAmount; appliedAt=r[0].appliedAt;
+            // 원본 명령의 reversed_by 갱신까지 같은 트랜잭션에 묶어, 크래시로 상태만 롤백되고
+            // reversed_by는 남는(이중 취소가 가능해지는) 상황을 막는다.
+            await client.query(
+              `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, reversal_of, applied_at)
+               VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,$8,now())`,
+              [reversalId, c.student_id, amount, appliedAmount, reason, actor.id, actor.name, id]);
+            // reversed_by IS NULL 가드 + rowCount 확인: FOR UPDATE로 이미 직렬화되어 있어도,
+            // 경합 가정이 언젠가 깨지는 경우(예: 향후 리팩터로 락 순서가 바뀌는 경우)에 대비한
+            // 마지막 방어선 — 0건이면 이미 다른 트랜잭션이 취소를 완료한 것이므로 롤백한다.
+            const upd = await client.query('UPDATE teacher_commands SET reversed_by=$2 WHERE id=$1 AND reversed_by IS NULL',[id, reversalId]);
+            if(upd.rowCount!==1) throw Object.assign(new Error('이미 취소(반대 거래) 처리된 명령입니다.'),{status:400});
+            return {state:next};
+          });
+        }catch(e){
+          return sendJson(res,e.status||400,{error:e.message||'취소 처리 중 오류가 발생했습니다.'});
+        }
         await db.audit('COMMAND_REVERSE', actor, {commandId:id, reversalId, studentId:c.student_id, amount, reason});
         return sendJson(res,200,{kind:'reversal',command:{
           id:reversalId, studentId:c.student_id, amount, appliedAmount, reason, status:'APPLIED',
