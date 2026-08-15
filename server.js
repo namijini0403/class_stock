@@ -197,6 +197,8 @@ function sendJson(res, status, data) {
 function clientIp(req){ if (IS_PRODUCTION) { const f = String(req.headers['x-forwarded-for']||'').split(',')[0].trim(); if (f) return f; } return req.socket.remoteAddress || ''; }
 
 const rateBuckets = new Map();
+const RATE_SWEEP_STALE_MS = 24 * 60 * 60 * 1000; // sweep staleness bound — callers' windowMs must stay well below this or their bucket can be swept mid-window
+/** key당 windowMs 내 max회 초과면 false. windowMs는 RATE_SWEEP_STALE_MS보다 충분히 작아야 함(그렇지 않으면 sweep이 카운터를 조기 초기화할 수 있음). */
 function rateLimitOk(key, max, windowMs) {
   try {
     const now = Date.now();
@@ -212,9 +214,8 @@ function rateLimitOk(key, max, windowMs) {
 }
 setInterval(() => {
   const now = Date.now();
-  const staleMs = 60 * 60 * 1000; // generous upper bound covering all rate-limit windows in use
   for (const [key, arr] of rateBuckets) {
-    while (arr.length && arr[0] <= now - staleMs) arr.shift();
+    while (arr.length && arr[0] <= now - RATE_SWEEP_STALE_MS) arr.shift();
     if (!arr.length) rateBuckets.delete(key);
   }
 }, 10 * 60 * 1000).unref();
