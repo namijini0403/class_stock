@@ -1,0 +1,11 @@
+{
+  "name": "class-stock",
+  "version": "3.0.0",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.js",
+    "check": "node scripts/syntax-check.mjs"
+  },
+  "dependencies": { "pg": "^8.13.0" }
+}
