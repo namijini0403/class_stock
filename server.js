@@ -152,7 +152,6 @@ const universe = new StockUniverse(path.join(DATA_DIR, 'stock-universe.json'), F
 const store = new JsonStore(path.join(DATA_DIR, 'server-data.json'));
 const marketData = new MarketDataService({dataDir:DATA_DIR,universe,serviceKey:PUBLIC_DATA_SERVICE_KEY,getFxRate:()=>usdKrwRate()});
 const prices = new Map();
-const teacherSessions = new Map();
 const quoteInflight = new Map();
 const newsCache = new Map();
 const newsInflight = new Map();
@@ -230,29 +229,18 @@ function readJson(req, limit = 1024*1024) {
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function safeStr(v,n=40){ return String(v ?? '').trim().slice(0,n); }
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
-  const hash = crypto.scryptSync(password, salt, 32).toString('hex');
-  return { passwordHash: hash, passwordSalt: salt };
-}
-function verifyPassword(password, rec) {
-  try {
-    const got = crypto.scryptSync(password, rec.passwordSalt, 32);
-    const exp = Buffer.from(rec.passwordHash, 'hex');
-    return got.length === exp.length && crypto.timingSafeEqual(got, exp);
-  } catch { return false; }
-}
-function createTeacherSession(actor) {
-  const token = crypto.randomBytes(32).toString('base64url');
-  teacherSessions.set(token, { actor, expiresAt: Date.now() + 12*60*60*1000 });
-  return token;
-}
+/** 무상태 JWT 디코드 — 교사 세션 Map 없이 Bearer 토큰만으로 판정 (재배포 생존) */
 function getTeacherActor(req) {
   const auth = String(req.headers.authorization || '');
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  const s = teacherSessions.get(token);
-  if (!s || s.expiresAt < Date.now()) { if (token) teacherSessions.delete(token); return null; }
-  return s.actor;
+  if (!token) return null;
+  const p = verifyToken(token);
+  if (!p || p.typ !== 'teacher') return null;
+  return { id: p.tid, name: p.name || '', role: p.role === 'admin' ? 'admin' : 'teacher', classCode: p.cls || null };
 }
+// ── 임시 shim — actor에 grade/classNo가 더 이상 없음(classCode 기반으로 교체됨).
+// 교사 범위 로스터 엔드포인트는 Task 6에서 학급 코드 기반으로 전면 교체될 때까지
+// 컴파일만 되고 결과가 비거나 부정확할 수 있음(허용된 과도기 상태).
 function scopeForActor(actor, requestedGrade='', requestedClass='') {
   if (actor.role === 'admin') return { grade:safeStr(requestedGrade,2), classNo:safeStr(requestedClass,3) };
   return { grade:String(actor.grade), classNo:String(actor.classNo) };
@@ -261,15 +249,26 @@ function actorCanManageStudent(actor, student) {
   return actor.role === 'admin' || (String(student.grade)===String(actor.grade) && String(student.classNo)===String(actor.classNo));
 }
 
-function newState(profile) {
+/** DB 기반 학생 계정 상태 초기값. classCode는 상태에 저장하지 않음(students.class_code가 원본) */
+function newState({accountId, nickname, classCode, grade, classNo, initialCash}) {
   const now = new Date().toISOString();
+  const cash = Number(initialCash ?? INITIAL_CASH);
   return {
-    schema:3, accountId:crypto.randomUUID(),
-    grade:safeStr(profile.grade,2), classNo:safeStr(profile.classNo,3),
-    studentNo:safeStr(profile.studentNo,4), name:safeStr(profile.name,30),
-    cash:INITIAL_CASH, initialCash:INITIAL_CASH, teacherNetAdjustments:0,
+    schema:3, accountId,
+    grade:safeStr(grade,2), classNo:safeStr(classNo,3),
+    studentNo:'', name:safeStr(nickname,30),
+    cash, initialCash:cash, teacherNetAdjustments:0,
     holdings:{}, realizedPnl:0, totalFees:0, corporateActionsApplied:[], transactions:[], version:1, createdAt:now, updatedAt:now
   };
+}
+/** Authorization: Bearer 학생 access 토큰 파싱. typ 없고 sid 있어야 유효 (refresh 토큰 재사용 방지) */
+function getStudentAuth(req) {
+  const auth = String(req.headers.authorization || '');
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!token) return null;
+  const p = verifyToken(token);
+  if (!p || p.typ || !p.sid) return null;
+  return { sid: p.sid, cls: p.cls, epo: Number(p.epo || 0) };
 }
 function studentMeta(pack) {
   const s = pack.state;
@@ -500,12 +499,74 @@ const server=http.createServer(async(req,res)=>{
       }
     }
 
+    if(req.method==='POST'&&url.pathname==='/api/auth/join'){
+      if(!rateLimitOk('join:'+clientIp(req),10,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
+      const b=await readJson(req,16384);
+      const classCode=String(b.classCode||'').trim().toUpperCase();
+      if(!/^[A-Z0-9]{3,8}$/.test(classCode)) return sendJson(res,400,{error:'학급 코드를 확인하세요. (영문 대문자·숫자 3~8자)'});
+      const nickname=safeStr(b.nickname,10);
+      if(!nickname) return sendJson(res,400,{error:'닉네임을 입력하세요.'});
+      if(/\d{3,}/.test(nickname)) return sendJson(res,400,{error:'닉네임에 3자리 이상 연속 숫자를 넣을 수 없어요. (개인정보 보호)'});
+      const pin=String(b.pin||'');
+      if(!/^\d{4}$/.test(pin)) return sendJson(res,400,{error:'PIN은 숫자 4자리입니다.'});
+
+      const clsR=await db.query('SELECT code, name, grade, class_no, initial_cash FROM classes WHERE code=$1',[classCode]);
+      const cls=clsR.rows[0];
+      if(!cls) return sendJson(res,404,{error:'학급 코드를 찾을 수 없습니다. 선생님께 확인하세요.'});
+
+      const stuR=await db.query('SELECT id, pin_scrypt, token_epoch, state FROM students WHERE class_code=$1 AND nickname=$2',[classCode,nickname]);
+      const row=stuR.rows[0];
+
+      let id, epo, state;
+      if(row){
+        const ah=lockoutHash('student', classCode+':'+nickname);
+        const lock=await db.checkLockout('student', ah);
+        if(lock.locked) return sendJson(res,423,{error:`PIN을 여러 번 틀려 잠시 잠겼습니다. ${lock.remainingSec}초 후 다시 시도하세요.`});
+        const ok=await scryptVerify(pin, row.pin_scrypt);
+        if(!ok){
+          await db.recordAuthFail('student', ah);
+          await db.audit('AUTH_FAIL', {id:row.id, name:nickname}, {scope:'student', classCode});
+          return sendJson(res,403,{error:'PIN이 올바르지 않습니다.'});
+        }
+        await db.clearAuthFail('student', ah);
+        id=row.id; epo=Number(row.token_epoch||0); state=row.state;
+      } else {
+        id=crypto.randomUUID();
+        const initialCash=Number(cls.initial_cash ?? INITIAL_CASH);
+        state=newState({accountId:id, nickname, classCode, grade:cls.grade, classNo:cls.class_no, initialCash});
+        const pinScrypt=await scryptHash(pin);
+        await db.query('INSERT INTO students (id, class_code, nickname, pin_scrypt, state) VALUES ($1,$2,$3,$4,$5)',
+          [id, classCode, nickname, pinScrypt, JSON.stringify(state)]);
+        epo=0;
+      }
+
+      const accessToken=signToken({sid:id, cls:classCode, epo}, 3600);
+      const refreshToken=signToken({sid:id, cls:classCode, epo, typ:'refresh'}, 2592000);
+      return sendJson(res,200,{studentId:id, classCode, className:cls.name, nickname, accessToken, refreshToken, state});
+    }
+    if(req.method==='POST'&&url.pathname==='/api/auth/refresh'){
+      if(!rateLimitOk('refresh:'+clientIp(req),60,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
+      const b=await readJson(req,16384);
+      const refreshToken=String(b.refreshToken||'');
+      const p=verifyToken(refreshToken);
+      if(!p||p.typ!=='refresh'||!p.sid) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
+      const r=await db.query('SELECT token_epoch, class_code FROM students WHERE id=$1',[p.sid]);
+      const row=r.rows[0];
+      if(!row||Number(p.epo||0)!==row.token_epoch) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
+      const epo=Number(row.token_epoch);
+      const out={accessToken:signToken({sid:p.sid, cls:row.class_code, epo}, 3600)};
+      if(tokenRemainingSeconds(refreshToken)<1296000) out.refreshToken=signToken({sid:p.sid, cls:row.class_code, epo, typ:'refresh'}, 2592000);
+      return sendJson(res,200,out);
+    }
+
     if(req.method==='POST'&&url.pathname==='/api/session/new'){
       const b=await readJson(req,16384);
       if(!/^\d{1,4}$/.test(String(b.studentNo||''))) return sendJson(res,400,{error:'학생 번호를 숫자로 입력하세요.'});
       if(!safeStr(b.name,30)) return sendJson(res,400,{error:'이름을 입력하세요.'});
       if(!/^\d{1,2}$/.test(String(b.grade||''))||!/^\d{1,2}$/.test(String(b.classNo||''))) return sendJson(res,400,{error:'학년과 반을 숫자로 입력하세요.'});
-      const state=newState(b), pack={state,signature:signState(state)}; persistLatest(pack);
+      // 구 서명 블롭 엔드포인트: Task 5에서 삭제 예정 — 컴파일/기동만 보장(R1), 기능 동작은 보장하지 않음.
+      const state=newState({accountId:crypto.randomUUID(), nickname:b.name, classCode:'', grade:b.grade, classNo:b.classNo, initialCash:INITIAL_CASH});
+      const pack={state,signature:signState(state)}; persistLatest(pack);
       return sendJson(res,200,{signedState:pack,commandToken:studentToken(state.accountId)});
     }
     if(req.method==='POST'&&url.pathname==='/api/student/register'){
@@ -566,12 +627,27 @@ const server=http.createServer(async(req,res)=>{
     }
 
     if(req.method==='POST'&&url.pathname==='/api/teacher/login'){
+      if(!rateLimitOk('tlogin:'+clientIp(req),10,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const b=await readJson(req,16384); const id=safeStr(b.id,40), password=String(b.password||'');
+      const ah=lockoutHash('teacher', id);
+      const lock=await db.checkLockout('teacher', ah);
+      if(lock.locked) return sendJson(res,423,{error:`PIN을 여러 번 틀려 잠시 잠겼습니다. ${lock.remainingSec}초 후 다시 시도하세요.`});
       let actor=null;
-      if(id==='admin'&&ADMIN_PASSWORD&&safeEqual(password,ADMIN_PASSWORD)) actor={id:'admin',name:'학교 관리자',role:'admin',grade:'',classNo:''};
-      else { const t=store.getTeacher(id); if(t&&t.enabled&&verifyPassword(password,t)) actor={id:t.id,name:t.name,role:'teacher',grade:t.grade,classNo:t.classNo}; }
-      if(!actor) return sendJson(res,401,{error:'교사 아이디 또는 비밀번호가 올바르지 않습니다.'});
-      return sendJson(res,200,{token:createTeacherSession(actor),actor});
+      if(id==='admin'){
+        if(ADMIN_PASSWORD&&safeEqual(password,ADMIN_PASSWORD)) actor={id:'admin',name:'학교 관리자',role:'admin',classCode:null};
+      } else {
+        const r=await db.query('SELECT * FROM teachers WHERE login_id=$1',[id]);
+        const t=r.rows[0];
+        if(t&&t.enabled&&await scryptVerify(password,t.pw_scrypt)) actor={id:t.id,name:t.display_name,role:t.role,classCode:t.class_code};
+      }
+      if(!actor){
+        await db.recordAuthFail('teacher', ah);
+        return sendJson(res,401,{error:'교사 아이디 또는 비밀번호가 올바르지 않습니다.'});
+      }
+      await db.clearAuthFail('teacher', ah);
+      await db.audit('TEACHER_LOGIN', actor, {});
+      const token=signToken({tid:actor.id,role:actor.role,cls:actor.classCode,name:actor.name,typ:'teacher'},43200);
+      return sendJson(res,200,{token,actor});
     }
     if(url.pathname.startsWith('/api/teacher/')||url.pathname.startsWith('/api/admin/')){
       const actor=getTeacherActor(req); if(!actor) return sendJson(res,401,{error:'교사 로그인이 필요합니다.'});
@@ -638,13 +714,54 @@ const server=http.createServer(async(req,res)=>{
         return sendJson(res,200,{action:store.updateCorporateAction(caMatch[1],patch,actor)});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/teachers'){
-        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); return sendJson(res,200,{teachers:store.listTeachers()});
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});
+        const r=await db.query('SELECT id, login_id, display_name, role, class_code, enabled, created_at FROM teachers ORDER BY created_at');
+        return sendJson(res,200,{teachers:r.rows});
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/teachers'){
-        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const b=await readJson(req,16384);
-        const id=safeStr(b.id,40), name=safeStr(b.name,40), grade=safeStr(b.grade,2), classNo=safeStr(b.classNo,3), password=String(b.password||'');
-        if(!/^[A-Za-z0-9._-]{3,40}$/.test(id)) return sendJson(res,400,{error:'교사 아이디는 영문/숫자/._- 조합 3자 이상으로 입력하세요.'}); if(!name||!/^\d{1,2}$/.test(grade)||!/^\d{1,2}$/.test(classNo)||password.length<4) return sendJson(res,400,{error:'이름, 학년, 반, 4자 이상 비밀번호를 입력하세요.'});
-        const hp=hashPassword(password); const t=store.createTeacher({id,name,grade:String(Number(grade)),classNo:String(Number(classNo)),...hp},actor); return sendJson(res,200,{teacher:{id:t.id,name:t.name,grade:t.grade,classNo:t.classNo,enabled:t.enabled}});
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});
+        const b=await readJson(req,16384);
+        const loginId=safeStr(b.id,40), name=safeStr(b.name,40), password=String(b.password||''), classCode=String(b.classCode||'').trim().toUpperCase();
+        if(!/^[A-Za-z0-9._-]{3,40}$/.test(loginId)) return sendJson(res,400,{error:'교사 아이디는 영문/숫자/._- 조합 3자 이상으로 입력하세요.'});
+        if(!name) return sendJson(res,400,{error:'이름을 입력하세요.'});
+        if(password.length<8) return sendJson(res,400,{error:'비밀번호는 8자 이상으로 입력하세요.'});
+        const clsR=await db.query('SELECT code FROM classes WHERE code=$1',[classCode]);
+        if(!clsR.rows[0]) return sendJson(res,400,{error:'학급 코드를 확인하세요.'});
+        const pwScrypt=await scryptHash(password);
+        const id=crypto.randomUUID();
+        await db.query(
+          `INSERT INTO teachers (id, login_id, display_name, pw_scrypt, role, class_code)
+           VALUES ($1,$2,$3,$4,'teacher',$5)
+           ON CONFLICT (login_id) DO UPDATE SET display_name=EXCLUDED.display_name, pw_scrypt=EXCLUDED.pw_scrypt, class_code=EXCLUDED.class_code, updated_at=now()`,
+          [id, loginId, name, pwScrypt, classCode]
+        );
+        return sendJson(res,200,{ok:true});
+      }
+      if(req.method==='GET'&&url.pathname==='/api/admin/classes'){
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});
+        const r=await db.query(
+          `SELECT c.code, c.name, c.grade, c.class_no, c.initial_cash, c.created_by, c.created_at,
+                  (SELECT count(*) FROM students s WHERE s.class_code=c.code) AS student_count
+           FROM classes c ORDER BY c.created_at`
+        );
+        const classes=r.rows.map(row=>({...row, initial_cash: row.initial_cash===null?null:Number(row.initial_cash), student_count: Number(row.student_count)}));
+        return sendJson(res,200,{classes});
+      }
+      if(req.method==='POST'&&url.pathname==='/api/admin/classes'){
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});
+        const b=await readJson(req,16384);
+        const code=String(b.code||'').trim().toUpperCase();
+        if(!/^[A-Z0-9]{3,8}$/.test(code)) return sendJson(res,400,{error:'학급 코드를 확인하세요. (영문 대문자·숫자 3~8자)'});
+        const name=safeStr(b.name,60), grade=safeStr(b.grade,2), classNo=safeStr(b.classNo,3);
+        const initialCashRaw=(b.initialCash===undefined||b.initialCash===null||b.initialCash==='')?NaN:Number(b.initialCash);
+        const initialCash=Number.isFinite(initialCashRaw)?Math.trunc(initialCashRaw):null;
+        await db.query(
+          `INSERT INTO classes (code, name, grade, class_no, initial_cash, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, grade=EXCLUDED.grade, class_no=EXCLUDED.class_no, initial_cash=EXCLUDED.initial_cash`,
+          [code, name, grade, classNo, initialCash, actor.id]
+        );
+        return sendJson(res,200,{ok:true});
       }
     }
 
