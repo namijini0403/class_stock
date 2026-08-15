@@ -4,7 +4,9 @@
 // 사용: $env:DATABASE_URL='postgres://...'; node scripts/smoke-server.mjs
 //
 // 흐름: 서버 기동 → 관리자 로그인 → 학급(SMOKE1) 생성 → 학생 가입 → GET /api/me →
-//       교사 지급(+5000) → GET /api/me로 현금 증가 + TEACHER 거래 기록 확인 → 서버 종료.
+//       교사 지급(+5000) → GET /api/me로 현금 증가 + TEACHER 거래 기록 확인 →
+//       GET /api/teacher/students로 명렬표 요약(cash 포함) 확인 →
+//       PIN 재설정(token_epoch 증가) → 새 PIN으로 재로그인 확인 → 서버 종료.
 // 시세 소스가 환경 의존적이므로 /api/trade는 스모크하지 않는다.
 
 import { spawn } from 'node:child_process';
@@ -135,6 +137,51 @@ async function main() {
     const teacherTx = (meBody2.state.transactions || []).find((t) => t.type === 'TEACHER');
     if (!teacherTx || Number(teacherTx.signedAmount) !== 5000) {
       throw new Error('TEACHER 거래 기록을 찾지 못함: ' + JSON.stringify(meBody2.state.transactions));
+    }
+
+    // 7) GET /api/teacher/students?classCode=SMOKE1 — 명렬표 요약(cash 포함)에 가입 학생이 있는지 확인
+    const rosterRes = await fetch(`${baseUrl}/api/teacher/students?classCode=${classCode}`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    const rosterBody = await rosterRes.json();
+    if (!rosterRes.ok || !Array.isArray(rosterBody.students)) {
+      throw new Error('명렬표 조회 실패: ' + JSON.stringify(rosterBody));
+    }
+    const rosterEntry = rosterBody.students.find((s) => s.studentId === studentId);
+    if (!rosterEntry || typeof rosterEntry.cash !== 'number') {
+      throw new Error('명렬표에서 가입 학생 cash 필드를 찾지 못함: ' + JSON.stringify(rosterBody));
+    }
+    if (rosterEntry.cash !== initialCash + 5000) {
+      throw new Error(`명렬표 cash가 기대와 다름 (기대 ${initialCash + 5000}, 실제 ${rosterEntry.cash})`);
+    }
+
+    // 8) PIN 재설정 — token_epoch가 증가해 구 토큰은 즉시 무효화됨
+    const resetRes = await fetch(`${baseUrl}/api/teacher/student/${studentId}/reset-pin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ pin: '5678' }),
+    });
+    const resetBody = await resetRes.json();
+    if (!resetRes.ok || !resetBody.ok) throw new Error('PIN 재설정 실패: ' + JSON.stringify(resetBody));
+
+    // 9) 구 학생 토큰은 이제 거부되어야 함(token_epoch 불일치)
+    const meAfterReset = await fetch(`${baseUrl}/api/me`, { headers: { Authorization: `Bearer ${studentToken}` } });
+    if (meAfterReset.status !== 401) {
+      throw new Error(`PIN 재설정 후 구 토큰이 여전히 통과함 (status ${meAfterReset.status})`);
+    }
+
+    // 10) 새 PIN으로 재가입(=로그인) — 기존 상태를 그대로 이어받는지 확인
+    const rejoinRes = await fetch(`${baseUrl}/api/auth/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ classCode, nickname: '스모크학생', pin: '5678' }),
+    });
+    const rejoinBody = await rejoinRes.json();
+    if (!rejoinRes.ok || !rejoinBody.accessToken || rejoinBody.studentId !== studentId) {
+      throw new Error('새 PIN 재가입 실패: ' + JSON.stringify(rejoinBody));
+    }
+    if (Number(rejoinBody.state?.cash) !== initialCash + 5000) {
+      throw new Error('새 PIN 재가입 후 state가 이전 상태를 이어받지 못함: ' + JSON.stringify(rejoinBody.state));
     }
 
     console.log('smoke-server OK');
