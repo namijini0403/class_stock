@@ -31,13 +31,25 @@
       <button id="logoutBtn" class="btn btn-quiet btn-small">로그아웃</button>
     </div>
 
+    <div id="classCodeBanner" class="hidden" style="margin:0 0 4px;padding:13px 17px;border-radius:12px;background:var(--primary);color:#fff;font-size:13px;font-weight:600"></div>
+
+    <article id="classSettingsCard" class="card teacher-admin-card hidden">
+      <div class="section-head"><div><h2>학급 정보</h2><p>학급 코드·이름·초기 자본금은 학교 관리자만 변경할 수 있습니다.</p></div></div>
+      <div id="classSettingsBody" class="teacher-controls"></div>
+    </article>
+
     <article class="card command-box">
       <div class="section-head">
         <div><h2>학생 선택</h2><p>학급 학생을 선택한 뒤 지급·차감 명령을 보낼 수 있습니다.</p></div>
-        <div id="adminScope" class="teacher-controls hidden"><label>학년<input id="scopeGrade" inputmode="numeric" maxlength="2" /></label><label>반<input id="scopeClass" inputmode="numeric" maxlength="2" /></label><button id="loadClassBtn" class="btn btn-secondary btn-small">학급 불러오기</button></div>
+        <div id="adminScope" class="teacher-controls hidden"><label>학급<select id="scopeClassCode"></select></label><button id="loadClassBtn" class="btn btn-secondary btn-small">학급 불러오기</button></div>
       </div>
       <div class="teacher-controls"><button id="selectAllBtn" class="btn btn-secondary btn-small">전체 선택</button><button id="clearAllBtn" class="btn btn-quiet btn-small">선택 해제</button><span id="selectionInfo" class="muted">0명 선택</span></div>
-      <div id="roster" class="roster-grid"></div>
+      <div class="table-wrap" style="margin-top:12px">
+        <table id="rosterTable">
+          <thead><tr><th>선택</th><th>닉네임</th><th>보유현금</th><th>보유종목수</th><th>평가금액</th><th>총자산</th><th>수익률</th><th>최근활동</th><th>관리</th></tr></thead>
+          <tbody id="rosterBody"></tbody>
+        </table>
+      </div>
     </article>
 
     <article class="card command-box">
@@ -102,9 +114,23 @@
       <div id="actionList"></div>
     </article>
 
+    <article id="adminClasses" class="card teacher-admin-card hidden">
+      <div class="section-head"><div><h2>학급 관리</h2><p>학급 코드는 학생이 접속할 때 닉네임·PIN과 함께 입력합니다.</p></div></div>
+      <div class="teacher-controls">
+        <label>학급 코드<input id="newClassCode" maxlength="8" placeholder="예: TIGER5" /></label>
+        <label>학급 이름<input id="newClassName" maxlength="60" placeholder="예: 5학년 2반" /></label>
+        <label>학년<input id="newClassGrade" inputmode="numeric" maxlength="2" /></label>
+        <label>반<input id="newClassNo" inputmode="numeric" maxlength="3" /></label>
+        <label>초기 자본금<input id="newClassCash" type="number" min="0" step="1" placeholder="예: 1000000" /></label>
+        <button id="createClassBtn" class="btn btn-primary btn-small">학급 저장</button>
+      </div>
+      <p class="muted">초기 자본금을 바꿔도 이미 접속한 학생에게는 영향이 없고, 신규 가입자에게만 적용됩니다.</p>
+      <div id="classList" class="teacher-list"></div>
+    </article>
+
     <article id="adminTeachers" class="card teacher-admin-card hidden">
-      <div class="section-head"><div><h2>담임 교사 계정</h2><p>담임 계정은 지정된 학년·반 학생만 조회하고 지급·차감할 수 있습니다.</p></div></div>
-      <div class="teacher-controls"><label>아이디<input id="newTeacherId" placeholder="예: g5c2" /></label><label>이름<input id="newTeacherName" placeholder="예: 5-2 담임" /></label><label>학년<input id="newTeacherGrade" inputmode="numeric" /></label><label>반<input id="newTeacherClass" inputmode="numeric" /></label><label>비밀번호<input id="newTeacherPassword" type="password" /></label><button id="createTeacherBtn" class="btn btn-primary btn-small">계정 저장</button></div>
+      <div class="section-head"><div><h2>담임 교사 계정</h2><p>담임 계정은 배정된 학급 학생만 조회하고 지급·차감할 수 있습니다.</p></div></div>
+      <div class="teacher-controls"><label>아이디<input id="newTeacherId" placeholder="예: g5c2" /></label><label>이름<input id="newTeacherName" placeholder="예: 5-2 담임" /></label><label>학급<select id="newTeacherClassCode"></select></label><label>비밀번호 <span class="optional">8자 이상</span><input id="newTeacherPassword" type="password" /></label><button id="createTeacherBtn" class="btn btn-primary btn-small">계정 저장</button></div>
       <div id="teacherList" class="teacher-list"></div>
     </article>
   </section>
