@@ -12,18 +12,21 @@ const DATA_DIR = path.join(ROOT, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 function ensureEnv() {
+  if (process.env.NODE_ENV === 'production') return;
   const p = path.join(ROOT, '.env');
   if (fs.existsSync(p)) return;
-  const secret = crypto.randomBytes(32).toString('hex');
-  const adminPassword = String(crypto.randomInt(100000, 1000000));
+  const jwtSecret = crypto.randomBytes(32).toString('hex');
+  const adminPassword = crypto.randomBytes(8).toString('base64url').slice(0, 10);
   const content = [
     'PORT=3000',
     'PUBLIC_DATA_SERVICE_KEY=',
     'PUBLIC_DATA_REFRESH_MS=10800000',
     'US_SYMBOL_REFRESH_MS=86400000',
     'INITIAL_CASH=1000000',
-    `SAVE_SIGNING_SECRET=${secret}`,
+    `JWT_SECRET=${jwtSecret}`,
     `ADMIN_PASSWORD=${adminPassword}`,
+    '# Postgres 연결 문자열 — 이제 Postgres가 필수입니다. 아래 주석을 해제하고 값을 채우세요.',
+    '# DATABASE_URL=postgres://postgres:dev@localhost:5432/class_stock',
     'NAVER_CLIENT_ID=',
     'NAVER_CLIENT_SECRET=',
     'NEWS_CACHE_MS=600000',
@@ -64,6 +67,18 @@ function loadEnv() {
 }
 ensureEnv();
 loadEnv();
+
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+if (IS_PRODUCTION) {
+  const missing = [];
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) missing.push('JWT_SECRET(32자 이상)');
+  if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.length < 8) missing.push('ADMIN_PASSWORD(8자 이상)');
+  if (!process.env.DATABASE_URL) missing.push('DATABASE_URL');
+  if (missing.length) { console.error('[boot] 운영 환경 필수 환경변수 누락/취약: ' + missing.join(', ') + ' — 기동을 중단합니다.'); process.exit(1); }
+}
+
+const { signToken, verifyToken, safeEqual, scryptHash, scryptVerify, lockoutHash, tokenRemainingSeconds } = require('./lib/auth');
+const db = require('./lib/db');
 
 function loadPublicDataKeyFile() {
   if (process.env.PUBLIC_DATA_SERVICE_KEY && process.env.PUBLIC_DATA_SERVICE_KEY.trim()) return;
@@ -174,10 +189,35 @@ function sendJson(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type':'application/json; charset=utf-8', 'Content-Length':Buffer.byteLength(body),
-    'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'no-referrer', 'X-Frame-Options':'DENY'
+    'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'no-referrer', 'X-Frame-Options':'DENY',
+    ...(IS_PRODUCTION ? {'Strict-Transport-Security':'max-age=31536000; includeSubDomains'} : {})
   });
   res.end(body);
 }
+function clientIp(req){ if (IS_PRODUCTION) { const f = String(req.headers['x-forwarded-for']||'').split(',')[0].trim(); if (f) return f; } return req.socket.remoteAddress || ''; }
+
+const rateBuckets = new Map();
+function rateLimitOk(key, max, windowMs) {
+  try {
+    const now = Date.now();
+    let arr = rateBuckets.get(key);
+    if (!arr) { arr = []; rateBuckets.set(key, arr); }
+    while (arr.length && arr[0] <= now - windowMs) arr.shift();
+    if (arr.length >= max) return false;
+    arr.push(now);
+    return true;
+  } catch {
+    return true;
+  }
+}
+setInterval(() => {
+  const now = Date.now();
+  const staleMs = 60 * 60 * 1000; // generous upper bound covering all rate-limit windows in use
+  for (const [key, arr] of rateBuckets) {
+    while (arr.length && arr[0] <= now - staleMs) arr.shift();
+    if (!arr.length) rateBuckets.delete(key);
+  }
+}, 10 * 60 * 1000).unref();
 function readJson(req, limit = 1024*1024) {
   return new Promise((resolve,reject) => {
     let data='';
@@ -424,7 +464,7 @@ function serveStatic(req,res){
   const file=path.normalize(path.join(PUBLIC_DIR,pathname));
   if(!file.startsWith(PUBLIC_DIR)||!fs.existsSync(file)||fs.statSync(file).isDirectory()) return sendJson(res,404,{error:'Not found'});
   const ext=path.extname(file).toLowerCase(); const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.webmanifest':'application/manifest+json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon'};
-  res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':ext==='.html'?'no-store':'public, max-age=300','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"});
+  res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':ext==='.html'?'no-store':'public, max-age=300','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",...(IS_PRODUCTION ? {'Strict-Transport-Security':'max-age=31536000; includeSubDomains'} : {})});
   fs.createReadStream(file).pipe(res);
 }
 
@@ -527,7 +567,7 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==='POST'&&url.pathname==='/api/teacher/login'){
       const b=await readJson(req,16384); const id=safeStr(b.id,40), password=String(b.password||'');
       let actor=null;
-      if(id==='admin'&&ADMIN_PASSWORD&&password===ADMIN_PASSWORD) actor={id:'admin',name:'학교 관리자',role:'admin',grade:'',classNo:''};
+      if(id==='admin'&&ADMIN_PASSWORD&&safeEqual(password,ADMIN_PASSWORD)) actor={id:'admin',name:'학교 관리자',role:'admin',grade:'',classNo:''};
       else { const t=store.getTeacher(id); if(t&&t.enabled&&verifyPassword(password,t)) actor={id:t.id,name:t.name,role:'teacher',grade:t.grade,classNo:t.classNo}; }
       if(!actor) return sendJson(res,401,{error:'교사 아이디 또는 비밀번호가 올바르지 않습니다.'});
       return sendJson(res,200,{token:createTeacherSession(actor),actor});
@@ -621,12 +661,16 @@ async function refreshMarketDataOnSchedule(){
   setInterval(async()=>{try{const r=await universe.refreshUsSymbols();recordUniverseEvents(r.events);}catch(e){console.warn('[미국종목] 주기 갱신 실패:',e.message);}},US_SYMBOL_REFRESH_MS).unref();
 }
 
-server.listen(PORT,'0.0.0.0',()=>{
-  console.log(`\n우리학교 모의투자 v2.9.1: http://localhost:${PORT}`);
-  console.log(`학생 화면: http://localhost:${PORT}/`);
-  console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
-  console.log('시세 모드: 공식 지연 시세 (국내 공공데이터 / 미국 IEX HIST)');
-  console.log(`종목목록: ${universe.stocks.length.toLocaleString()}개 (${universe.source})`);
-  console.log(`동시 연결 상한: ${server.maxConnections}\n`);
-  refreshMarketDataOnSchedule(); if(fxMode()==='AUTO')refreshAutoFx(false); setInterval(()=>{if(fxMode()==='AUTO')refreshAutoFx(false);},FX_CACHE_MS).unref();
-});
+async function main(){
+  await db.init();
+  server.listen(PORT,'0.0.0.0',()=>{
+    console.log(`\n우리학교 모의투자 v2.9.1: http://localhost:${PORT}`);
+    console.log(`학생 화면: http://localhost:${PORT}/`);
+    console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
+    console.log('시세 모드: 공식 지연 시세 (국내 공공데이터 / 미국 IEX HIST)');
+    console.log(`종목목록: ${universe.stocks.length.toLocaleString()}개 (${universe.source})`);
+    console.log(`동시 연결 상한: ${server.maxConnections}\n`);
+    refreshMarketDataOnSchedule(); if(fxMode()==='AUTO')refreshAutoFx(false); setInterval(()=>{if(fxMode()==='AUTO')refreshAutoFx(false);},FX_CACHE_MS).unref();
+  });
+}
+main().catch(e => { console.error('[boot] 기동 실패:', e.message); process.exit(1); });
