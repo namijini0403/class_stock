@@ -2,7 +2,6 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { JsonStore } = require('./lib/store');
 const { StockUniverse } = require('./lib/universe');
 const { MarketDataService } = require('./lib/market-data');
 
@@ -93,7 +92,6 @@ loadPublicDataKeyFile();
 
 const PORT = Number(process.env.PORT || 3000);
 const INITIAL_CASH = Number(process.env.INITIAL_CASH || 1000000);
-const HMAC_SECRET = process.env.SAVE_SIGNING_SECRET || crypto.randomBytes(32).toString('hex');
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const PUBLIC_DATA_SERVICE_KEY = process.env.PUBLIC_DATA_SERVICE_KEY || '';
 const PUBLIC_DATA_REFRESH_MS = Math.max(60*60*1000, Number(process.env.PUBLIC_DATA_REFRESH_MS || 10800000));
@@ -116,7 +114,6 @@ const FX_AUTO_URL = process.env.FX_AUTO_URL || 'https://api.frankfurter.dev/v2/r
 const FX_CACHE_MS = Math.max(10*60*1000, Number(process.env.FX_CACHE_MS || 3600000));
 const UNIVERSE_REFRESH_MS = US_SYMBOL_REFRESH_MS;
 
-if (!process.env.SAVE_SIGNING_SECRET) console.warn('[주의] SAVE_SIGNING_SECRET이 없습니다. 재시작 시 기존 세이브 검증이 깨집니다.');
 if (!ADMIN_PASSWORD) console.warn('[주의] ADMIN_PASSWORD가 없습니다. 교사 계정 생성/관리 기능이 비활성화됩니다.');
 
 const FALLBACK = [
@@ -149,7 +146,6 @@ const FALLBACK = [
 const POPULAR_CODES = ['005930','000660','035420','005380','US:NAS:AAPL','US:NAS:MSFT','US:NAS:NVDA','US:NAS:TSLA','US:NAS:AMZN','US:NAS:GOOGL','US:NYS:JPM','US:NYS:KO'];
 
 const universe = new StockUniverse(path.join(DATA_DIR, 'stock-universe.json'), FALLBACK);
-const store = new JsonStore(path.join(DATA_DIR, 'server-data.json'));
 const marketData = new MarketDataService({dataDir:DATA_DIR,universe,serviceKey:PUBLIC_DATA_SERVICE_KEY,getFxRate:()=>usdKrwRate()});
 const prices = new Map();
 const quoteInflight = new Map();
@@ -164,25 +160,6 @@ let fxFetchCount = 0;
 let fxInflight = null;
 let lastFxAttemptAt = 0;
 let lastFxError = '';
-
-function canonicalize(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(canonicalize).join(',') + ']';
-  return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalize(value[k])).join(',') + '}';
-}
-function signState(state) { return crypto.createHmac('sha256', HMAC_SECRET).update(canonicalize(state)).digest('base64url'); }
-function verifySignedState(pack) {
-  if (!pack || !pack.state || typeof pack.signature !== 'string') return false;
-  const a = Buffer.from(signState(pack.state));
-  const b = Buffer.from(pack.signature);
-  return a.length === b.length && crypto.timingSafeEqual(a,b);
-}
-function studentToken(accountId) { return crypto.createHmac('sha256', HMAC_SECRET).update(`student-command:${accountId}`).digest('base64url'); }
-function verifyStudentToken(accountId, token) {
-  if (!accountId || !token) return false;
-  const a = Buffer.from(studentToken(accountId)); const b = Buffer.from(String(token));
-  return a.length === b.length && crypto.timingSafeEqual(a,b);
-}
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
@@ -270,48 +247,25 @@ function getStudentAuth(req) {
   if (!p || p.typ || !p.sid) return null;
   return { sid: p.sid, cls: p.cls, epo: Number(p.epo || 0) };
 }
-function studentMeta(pack) {
-  const s = pack.state;
-  return {
-    accountId:s.accountId, grade:safeStr(s.grade,2), classNo:safeStr(s.classNo,3), studentNo:safeStr(s.studentNo,4), name:safeStr(s.name,30),
-    latestVersion:Number(s.version||0), latestSignature:pack.signature
-  };
-}
-function assertLatest(pack, {allowUnregistered=true}={}) {
-  if (!verifySignedState(pack)) throw new Error('세이브 데이터 서명이 올바르지 않습니다.');
-  const s = pack.state;
-  if (!s.accountId) throw new Error('계정 ID가 없습니다.');
-  const reg = store.getStudent(s.accountId);
-  if (!reg) {
-    if (!allowUnregistered) throw new Error('서버에 등록되지 않은 학생 계정입니다.');
-    return null;
-  }
-  const v = Number(s.version||0);
-  if (Number(reg.latestVersion||0) > v) throw new Error('이 기기의 세이브가 서버가 확인한 최신 기록보다 오래되었습니다. 최신 세이브를 사용하세요.');
-  if (Number(reg.latestVersion||0) === v && reg.latestSignature && reg.latestSignature !== pack.signature) throw new Error('같은 버전의 다른 세이브가 이미 사용되었습니다.');
-  return reg;
-}
-function persistLatest(pack) { return store.upsertStudent(studentMeta(pack)); }
-
 function getStock(code) { return universe.lookup(code) || FALLBACK.find(s=>s.code===code) || null; }
 function resolveStockCode(input){ const raw=safeStr(input,50); return universe.resolveCode(raw) || (getStock(raw)?raw:''); }
-function tradeFeeRate(){ return Math.min(0.01, Math.max(0, Number(store.getSetting('tradeFeeRate', DEFAULT_TRADE_FEE_RATE)))); }
+function tradeFeeRate(){ return Math.min(0.01, Math.max(0, Number(db.getSetting('tradeFeeRate', DEFAULT_TRADE_FEE_RATE)))); }
 function calcFee(amount){ return Math.max(0, Math.ceil(Number(amount||0) * tradeFeeRate())); }
-function fxMode(){ return String(store.getSetting('fxMode', DEFAULT_FX_MODE)).toUpperCase()==='MANUAL'?'MANUAL':'AUTO'; }
-function manualUsdKrwRate(){ return Math.min(3000, Math.max(500, Number(store.getSetting('usdKrwRate', DEFAULT_USD_KRW_RATE)))); }
-function autoUsdKrwRate(){ return Math.min(3000, Math.max(500, Number(store.getSetting('autoUsdKrwRate', DEFAULT_USD_KRW_RATE)))); }
-function autoFxUpdatedAt(){ return Number(store.getSetting('autoFxUpdatedAt', 0))||0; }
+function fxMode(){ return String(db.getSetting('fxMode', DEFAULT_FX_MODE)).toUpperCase()==='MANUAL'?'MANUAL':'AUTO'; }
+function manualUsdKrwRate(){ return Math.min(3000, Math.max(500, Number(db.getSetting('usdKrwRate', DEFAULT_USD_KRW_RATE)))); }
+function autoUsdKrwRate(){ return Math.min(3000, Math.max(500, Number(db.getSetting('autoUsdKrwRate', DEFAULT_USD_KRW_RATE)))); }
+function autoFxUpdatedAt(){ return Number(db.getSetting('autoFxUpdatedAt', 0))||0; }
 function usdKrwRate(){ return fxMode()==='MANUAL'?manualUsdKrwRate():autoUsdKrwRate(); }
-function fxInfo(){return {mode:fxMode(),rate:usdKrwRate(),manualRate:manualUsdKrwRate(),autoRate:autoUsdKrwRate(),autoUpdatedAt:autoFxUpdatedAt(),source:fxMode()==='MANUAL'?'관리자 수동 설정':String(store.getSetting('autoFxSource','Frankfurter · 중앙은행 기준환율'))};}
+function fxInfo(){return {mode:fxMode(),rate:usdKrwRate(),manualRate:manualUsdKrwRate(),autoRate:autoUsdKrwRate(),autoUpdatedAt:autoFxUpdatedAt(),source:fxMode()==='MANUAL'?'관리자 수동 설정':String(db.getSetting('autoFxSource','Frankfurter · 중앙은행 기준환율'))};}
 async function refreshAutoFx(force=false){
   if(!force && autoFxUpdatedAt() && Date.now()-autoFxUpdatedAt()<FX_CACHE_MS)return fxInfo();
   if(!force && lastFxAttemptAt && Date.now()-lastFxAttemptAt<10*60*1000)return {...fxInfo(),error:lastFxError||undefined};
   if(fxInflight)return fxInflight;lastFxAttemptAt=Date.now();
-  fxInflight=(async()=>{try{const r=await fetch(FX_AUTO_URL,{headers:{Accept:'application/json','User-Agent':'ClassStockSimulator/2.9'},signal:AbortSignal.timeout(6000)});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();const rate=Number(d.rate??d.rates?.KRW);if(!Number.isFinite(rate)||rate<500||rate>3000)throw new Error('환율 응답값이 올바르지 않습니다.');store.data.settings.autoUsdKrwRate=Math.round(rate*100)/100;store.data.settings.autoFxUpdatedAt=Date.now();store.data.settings.autoFxSource='Frankfurter · 중앙은행 기준환율';store.save();fxFetchCount++;lastFxError='';prices.clear();return fxInfo();}catch(e){lastFxError=e.message;console.warn('[자동 환율] 조회 실패. 마지막 저장 환율 사용:',e.message);return {...fxInfo(),error:e.message};}finally{fxInflight=null;}})();return fxInflight;
+  fxInflight=(async()=>{try{const r=await fetch(FX_AUTO_URL,{headers:{Accept:'application/json','User-Agent':'ClassStockSimulator/2.9'},signal:AbortSignal.timeout(6000)});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();const rate=Number(d.rate??d.rates?.KRW);if(!Number.isFinite(rate)||rate<500||rate>3000)throw new Error('환율 응답값이 올바르지 않습니다.');await db.setSetting('autoUsdKrwRate',Math.round(rate*100)/100);await db.setSetting('autoFxUpdatedAt',Date.now());await db.setSetting('autoFxSource','Frankfurter · 중앙은행 기준환율');fxFetchCount++;lastFxError='';prices.clear();return fxInfo();}catch(e){lastFxError=e.message;console.warn('[자동 환율] 조회 실패. 마지막 저장 환율 사용:',e.message);return {...fxInfo(),error:e.message};}finally{fxInflight=null;}})();return fxInflight;
 }
 function isUsStock(stock){ return Boolean(stock && (stock.country==='US' || stock.currency==='USD')); }
 function displayStockCode(stock){ return stock?.displayCode || stock?.symbol || stock?.code || ''; }
-function corporateTradeBlockReason(code){let halted=false,removed=false,hardBlocked='';for(const a of store.getEffectiveCorporateActions()){if(String(a.oldCode)!==String(code))continue;if(a.type==='HALT')halted=true;else if(a.type==='RESUME')halted=false;else if(a.type==='REMOVED')removed=true;else if(a.type==='RESTORED')removed=false;else if(a.type==='DELIST')hardBlocked='상장폐지된 종목입니다.';else if(['CODE_CHANGE','MERGER'].includes(a.type))hardBlocked='기업행동으로 기존 종목 거래가 종료되었습니다.';}return hardBlocked||(removed?'상장 종목 목록에서 제외된 종목입니다.':'')||(halted?'현재 거래정지 종목입니다.':'');}
+function corporateTradeBlockReason(code){let halted=false,removed=false,hardBlocked='';for(const a of db.getEffectiveCorporateActions()){if(String(a.oldCode)!==String(code))continue;if(a.type==='HALT')halted=true;else if(a.type==='RESUME')halted=false;else if(a.type==='REMOVED')removed=true;else if(a.type==='RESTORED')removed=false;else if(a.type==='DELIST')hardBlocked='상장폐지된 종목입니다.';else if(['CODE_CHANGE','MERGER'].includes(a.type))hardBlocked='기업행동으로 기존 종목 거래가 종료되었습니다.';}return hardBlocked||(removed?'상장 종목 목록에서 제외된 종목입니다.':'')||(halted?'현재 거래정지 종목입니다.':'');}
 function stockTradeBlockReason(stock){ if(!stock) return '종목을 찾을 수 없습니다.'; const actionBlock=corporateTradeBlockReason(stock.code); if(actionBlock)return actionBlock; if(stock.active===false) return '현재 상장 종목 목록에서 제외되어 거래할 수 없습니다.'; if(stock.tradingHalt) return '현재 거래정지 종목입니다.'; if(stock.liquidation) return '정리매매 종목은 이 교육용 프로그램에서 거래할 수 없습니다.'; return ''; }
 function stockView(stock){if(!stock)return null;return {...stock,tradeBlockedReason:stockTradeBlockReason(stock)};}
 async function quoteFor(code, {force=false}={}) {
@@ -459,6 +413,34 @@ function applyTeacherCommands(state, commands) {
   return {next,results};
 }
 
+/**
+ * 학생 1명의 state를 FOR UPDATE로 잠근 뒤, 지연 적용 기업행동 → 호출자 mutation(fn) 순으로
+ * 적용하고 트랜잭션 안에서 저장한다. fn은 null이면 읽기 전용(예: GET /api/me).
+ * fn(state) => {state, extra?} 형태를 반환해야 한다.
+ */
+async function withStudentState(sid, fn) {
+  return db.withTransaction(async (client) => {
+    const r = await client.query(
+      'SELECT id, class_code, nickname, token_epoch, state, state_version FROM students WHERE id=$1 FOR UPDATE', [sid]);
+    if (!r.rows.length) throw Object.assign(new Error('학생 계정을 찾을 수 없습니다.'), {status:404});
+    const row = r.rows[0];
+    let state = row.state;
+    // 1) 지연 적용 기업행동 (applyCorporateActions 그대로 재사용)
+    const ca = applyCorporateActions(state, db.getEffectiveCorporateActions());
+    if (ca.applied.length) state = ca.next;
+    // 2) 호출자 mutation (fn이 null이면 읽기/새로고침)
+    const out = fn ? await fn(state) : { state };
+    state = out.state;
+    // 최적화: 기업행동도 없고 fn도 없었으면(순수 읽기) UPDATE를 건너뛴다.
+    if (fn || ca.applied.length) {
+      await client.query(
+        'UPDATE students SET state=$2, state_version=state_version+1, updated_at=now() WHERE id=$1',
+        [sid, JSON.stringify(state)]);
+    }
+    return { state, row, appliedActions: ca.applied, warnings: ca.warnings, extra: out.extra };
+  });
+}
+
 function serveStatic(req,res){
   let pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname); if(pathname==='/') pathname='/index.html';
   const file=path.normalize(path.join(PUBLIC_DIR,pathname));
@@ -468,11 +450,30 @@ function serveStatic(req,res){
   fs.createReadStream(file).pipe(res);
 }
 
+let healthCountsCache = { at: 0, students: 0, corporateActions: 0 };
+/** 학생 수·기업행동 수를 30초 캐시. 반별 상세는 노출하지 않는다(전체 카운트만). */
+async function healthCounts() {
+  if (Date.now() - healthCountsCache.at < 30000) return healthCountsCache;
+  try {
+    const [sRes, caRes] = await Promise.all([
+      db.query('SELECT count(*)::int AS n FROM students'),
+      db.query('SELECT count(*)::int AS n FROM corporate_actions'),
+    ]);
+    healthCountsCache = { at: Date.now(), students: sRes.rows[0].n, corporateActions: caRes.rows[0].n };
+  } catch (e) {
+    console.warn('[health] 카운트 조회 실패:', e.message);
+  }
+  return healthCountsCache;
+}
+
 const server=http.createServer(async(req,res)=>{
   requestCount++;
   const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
   try {
-    if(req.method==='GET'&&url.pathname==='/api/health') return sendJson(res,200,{ok:true,mode:'OFFICIAL_DELAYED',requestCount,tradeCount,rejectedTradeCount,quoteFetchCount,newsFetchCount,universeCount:universe.stocks.length,retiredCount:universe.retired.size,universeSource:universe.source,marketData:marketData.status(),tradeFeeRate:tradeFeeRate(),usdKrwRate:usdKrwRate(),fxMode:fxMode(),fxFetchCount,corporateActions:store.data.corporateActions.length,students:Object.keys(store.data.students).length,pendingCommands:store.data.commands.filter(c=>c.status==='PENDING').length,uptimeSec:Math.round(process.uptime())});
+    if(req.method==='GET'&&url.pathname==='/api/health'){
+      const hc=await healthCounts();
+      return sendJson(res,200,{ok:true,db:true,mode:'OFFICIAL_DELAYED',requestCount,tradeCount,rejectedTradeCount,quoteFetchCount,newsFetchCount,universeCount:universe.stocks.length,retiredCount:universe.retired.size,universeSource:universe.source,marketData:marketData.status(),tradeFeeRate:tradeFeeRate(),usdKrwRate:usdKrwRate(),fxMode:fxMode(),fxFetchCount,corporateActions:hc.corporateActions,students:hc.students,uptimeSec:Math.round(process.uptime())});
+    }
     if(req.method==='GET'&&url.pathname==='/api/config'){if(fxMode()==='AUTO')await refreshAutoFx(false);if(marketData.kr.size===0)await marketData.refreshKr(false);return sendJson(res,200,{initialCash:INITIAL_CASH,mode:'OFFICIAL_DELAYED',marketData:marketData.status(),newsEnabled:true,newsAuto:true,newsProvider:NAVER_ENABLED?'네이버 우선 + 공개뉴스 자동':'공개뉴스 자동',tradeFeeRate:tradeFeeRate(),usdKrwRate:usdKrwRate(),fx:fxInfo(),universe:{count:universe.stocks.length,retiredCount:universe.retired.size,source:universe.source,updatedAt:universe.lastUpdatedAt},popular:POPULAR_CODES.map(getStock).filter(s=>s&&s.active!==false).map(stockView)});}
     if(req.method==='GET'&&url.pathname==='/api/stocks'){
       const limit=Math.min(100,Math.max(1,Number(url.searchParams.get('limit')||50))); const offset=Math.max(0,Number(url.searchParams.get('offset')||0));
@@ -569,71 +570,45 @@ const server=http.createServer(async(req,res)=>{
       return sendJson(res,200,out);
     }
 
-    if(req.method==='POST'&&url.pathname==='/api/session/new'){
-      const b=await readJson(req,16384);
-      if(!/^\d{1,4}$/.test(String(b.studentNo||''))) return sendJson(res,400,{error:'학생 번호를 숫자로 입력하세요.'});
-      if(!safeStr(b.name,30)) return sendJson(res,400,{error:'이름을 입력하세요.'});
-      if(!/^\d{1,2}$/.test(String(b.grade||''))||!/^\d{1,2}$/.test(String(b.classNo||''))) return sendJson(res,400,{error:'학년과 반을 숫자로 입력하세요.'});
-      // 구 서명 블롭 엔드포인트: Task 5에서 삭제 예정 — 컴파일/기동만 보장(R1), 기능 동작은 보장하지 않음.
-      const state=newState({accountId:crypto.randomUUID(), nickname:b.name, classCode:'', grade:b.grade, classNo:b.classNo, initialCash:INITIAL_CASH});
-      const pack={state,signature:signState(state)}; persistLatest(pack);
-      return sendJson(res,200,{signedState:pack,commandToken:studentToken(state.accountId)});
-    }
-    if(req.method==='POST'&&url.pathname==='/api/student/register'){
-      const b=await readJson(req,700000); const pack=b.signedState; assertLatest(pack,{allowUnregistered:true}); const reg=persistLatest(pack);
-      return sendJson(res,200,{ok:true,commandToken:studentToken(pack.state.accountId),pendingCount:store.getPendingCommands(pack.state.accountId).length,student:{grade:reg.grade,classNo:reg.classNo,studentNo:reg.studentNo,name:reg.name}});
-    }
-    if(req.method==='GET'&&url.pathname==='/api/student/pending'){
-      const accountId=url.searchParams.get('accountId')||''; const token=req.headers['x-student-token']||'';
-      if(!verifyStudentToken(accountId,token)) return sendJson(res,401,{error:'학생 동기화 인증이 올바르지 않습니다.'});
-      const items=store.getPendingCommands(accountId).map(c=>({id:c.id,amount:c.amount,reason:c.reason,createdAt:c.createdAt,createdByName:c.createdByName}));
-      return sendJson(res,200,{items});
-    }
-    if(req.method==='POST'&&url.pathname==='/api/student/apply-commands'){
-      const b=await readJson(req,900000); const pack=b.signedState; const accountId=pack?.state?.accountId||'';
-      if(!verifyStudentToken(accountId,req.headers['x-student-token']||'')) return sendJson(res,401,{error:'학생 동기화 인증이 올바르지 않습니다.'});
-      assertLatest(pack,{allowUnregistered:false}); const pending=store.getPendingCommands(accountId);
-      if(!pending.length) return sendJson(res,200,{signedState:pack,applied:[]});
-      const {next,results}=applyTeacherCommands(pack.state,pending); const out={state:next,signature:signState(next)};
-      store.markCommandsApplied(results); persistLatest(out);
-      return sendJson(res,200,{signedState:out,applied:pending.map(c=>{const r=results.find(x=>x.id===c.id);return{id:c.id,requestedAmount:c.amount,appliedAmount:r?.appliedAmount||0,reason:c.reason};})});
-    }
-    if(req.method==='POST'&&url.pathname==='/api/student/apply-corporate-actions'){
-      const b=await readJson(req,1000000); const pack=b.signedState; const accountId=pack?.state?.accountId||'';
-      if(!verifyStudentToken(accountId,req.headers['x-student-token']||'')) return sendJson(res,401,{error:'학생 동기화 인증이 올바르지 않습니다.'});
-      assertLatest(pack,{allowUnregistered:false}); const actions=store.getEffectiveCorporateActions(); const result=applyCorporateActions(pack.state,actions);
-      if(!result.applied.length) return sendJson(res,200,{signedState:pack,applied:[],warnings:result.warnings});
-      const out={state:result.next,signature:signState(result.next)}; persistLatest(out); return sendJson(res,200,{signedState:out,applied:result.applied,warnings:result.warnings});
-    }
-    if(req.method==='POST'&&url.pathname==='/api/student/profile'){
-      const b=await readJson(req,700000); const pack=b.signedState; assertLatest(pack,{allowUnregistered:true});
-      if(!/^\d{1,2}$/.test(String(b.grade||''))||!/^\d{1,2}$/.test(String(b.classNo||''))) return sendJson(res,400,{error:'학년과 반을 숫자로 입력하세요.'});
-      const next=structuredClone(pack.state); next.grade=String(Number(b.grade)); next.classNo=String(Number(b.classNo)); next.version=Number(next.version||0)+1; next.updatedAt=new Date().toISOString(); next.schema=Math.max(3,Number(next.schema||1));
-      const out={state:next,signature:signState(next)}; persistLatest(out); return sendJson(res,200,{signedState:out,commandToken:studentToken(next.accountId)});
+    if(req.method==='GET'&&url.pathname==='/api/me'){
+      const auth=getStudentAuth(req); if(!auth) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
+      if(!rateLimitOk('me:'+auth.sid,30,60000)) return sendJson(res,429,{error:'요청이 너무 잦습니다. 잠시 후 다시 시도하세요.'});
+      try{
+        const result=await withStudentState(auth.sid,null);
+        if(auth.epo!==result.row.token_epoch) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
+        return sendJson(res,200,{state:result.state,classCode:result.row.class_code,nickname:result.row.nickname,appliedActions:result.appliedActions,warnings:result.warnings});
+      }catch(e){return sendJson(res,e.status||400,{error:e.message||'학생 정보를 불러오지 못했습니다.'});}
     }
 
     if(req.method==='POST'&&url.pathname==='/api/trade'){
+      const auth=getStudentAuth(req); if(!auth) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
+      if(!rateLimitOk('trade:'+auth.sid,30,60000)) return sendJson(res,429,{error:'거래 요청이 너무 잦습니다. 잠시 후 다시 시도하세요.'});
       try{
-        const b=await readJson(req,900000); const {signedState,side,code}=b; const qty=Number(b.qty); const comment=safeStr(b.comment,80); assertLatest(signedState,{allowUnregistered:true});
+        const b=await readJson(req,16384); const side=String(b.side||''); const code=String(b.code||''); const qty=Number(b.qty); const comment=safeStr(b.comment,80);
         if(!getStock(code)) throw new Error('거래할 수 없는 종목입니다.'); if(!Number.isInteger(qty)||qty<1||qty>100000) throw new Error('수량은 1주 이상의 정수로 입력하세요.'); if(!['BUY','SELL'].includes(side)) throw new Error('매수/매도 유형이 잘못되었습니다.');
         const stock=getStock(code),block=stockTradeBlockReason(stock); if(block) throw new Error(block);
-        const p=await quoteForTrade(code); if(!p||!p.price) throw new Error('현재 시세를 가져오지 못했습니다.');
-        const result=applyTrade(signedState.state,side,code,qty,p,comment); const out={state:result.next,signature:signState(result.next)}; persistLatest(out); tradeCount++;
-        return sendJson(res,200,{signedState:out,execution:{side,code,displayCode:displayStockCode(stock),name:stock.name,market:stock.market,country:stock.country||'KR',currency:p.currency||stock.currency||'KRW',nativePrice:Number(p.nativePrice||p.price),fxRate:Number(p.fxRate||1),qty,price:p.price,amount:result.gross,grossAmount:result.gross,fee:result.fee,feeRate:tradeFeeRate(),netAmount:result.netAmount,at:result.next.updatedAt,source:p.source,sourceLabel:p.sourceLabel||'',asOfDate:p.asOfDate||''}});
-      }catch(e){rejectedTradeCount++;return sendJson(res,400,{error:e.message||'거래 처리 중 오류가 발생했습니다.'});}
+        const quote=await quoteForTrade(code); if(!quote||!quote.price) throw new Error('현재 시세를 가져오지 못했습니다.');
+        const result=await withStudentState(auth.sid, async (state) => {
+          const r=applyTrade(state,side,code,qty,quote,comment);
+          return {state:r.next, extra:r};
+        });
+        tradeCount++;
+        const r=result.extra;
+        return sendJson(res,200,{state:result.state,execution:{side,code,displayCode:displayStockCode(stock),name:stock.name,market:stock.market,country:stock.country||'KR',currency:quote.currency||stock.currency||'KRW',nativePrice:Number(quote.nativePrice||quote.price),fxRate:Number(quote.fxRate||1),qty,price:quote.price,amount:r.gross,grossAmount:r.gross,fee:r.fee,feeRate:tradeFeeRate(),netAmount:r.netAmount,at:result.state.updatedAt,source:quote.source,sourceLabel:quote.sourceLabel||'',asOfDate:quote.asOfDate||''}});
+      }catch(e){rejectedTradeCount++;return sendJson(res,e.status||400,{error:e.message||'거래 처리 중 오류가 발생했습니다.'});}
     }
     if(req.method==='POST'&&url.pathname==='/api/transaction/comment'){
+      const auth=getStudentAuth(req); if(!auth) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
       try{
-        const b=await readJson(req,900000); const pack=b.signedState; const transactionId=safeStr(b.transactionId,80); const comment=safeStr(b.comment,80); assertLatest(pack,{allowUnregistered:true});
-        const next=structuredClone(pack.state); if(!Array.isArray(next.transactions)) next.transactions=[];
-        const tx=next.transactions.find(t=>t && t.id===transactionId && t.type==='TRADE'); if(!tx) throw new Error('수정할 거래 기록을 찾을 수 없습니다.');
-        tx.comment=comment; tx.commentUpdatedAt=new Date().toISOString(); next.version=Number(next.version||0)+1; next.updatedAt=new Date().toISOString(); next.schema=Math.max(3,Number(next.schema||1));
-        const out={state:next,signature:signState(next)}; persistLatest(out); return sendJson(res,200,{signedState:out});
-      }catch(e){return sendJson(res,400,{error:e.message||'거래 메모를 저장하지 못했습니다.'});}
-    }
-
-    if(req.method==='POST'&&url.pathname==='/api/save/verify'){
-      const b=await readJson(req,700000); try{assertLatest(b.signedState,{allowUnregistered:true});return sendJson(res,200,{valid:true});}catch(e){return sendJson(res,200,{valid:false,error:e.message});}
+        const b=await readJson(req,16384); const transactionId=safeStr(b.transactionId,80); const comment=safeStr(b.comment,80);
+        const result=await withStudentState(auth.sid, async (state) => {
+          const next=structuredClone(state); if(!Array.isArray(next.transactions)) next.transactions=[];
+          const tx=next.transactions.find(t=>t && t.id===transactionId && t.type==='TRADE'); if(!tx) throw new Error('수정할 거래 기록을 찾을 수 없습니다.');
+          tx.comment=comment; tx.commentUpdatedAt=new Date().toISOString(); next.version=Number(next.version||0)+1; next.updatedAt=new Date().toISOString(); next.schema=Math.max(3,Number(next.schema||1));
+          return {state:next};
+        });
+        return sendJson(res,200,{state:result.state});
+      }catch(e){return sendJson(res,e.status||400,{error:e.message||'거래 메모를 저장하지 못했습니다.'});}
     }
 
     if(req.method==='POST'&&url.pathname==='/api/teacher/login'){
@@ -662,29 +637,85 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname.startsWith('/api/teacher/')||url.pathname.startsWith('/api/admin/')){
       const actor=getTeacherActor(req); if(!actor) return sendJson(res,401,{error:'교사 로그인이 필요합니다.'});
       if(req.method==='GET'&&url.pathname==='/api/teacher/students'){
-        const scope=scopeForActor(actor,url.searchParams.get('grade')||'',url.searchParams.get('classNo')||'');
-        return sendJson(res,200,{actor,scope,students:store.listStudents(scope).map(s=>({accountId:s.accountId,grade:s.grade,classNo:s.classNo,studentNo:s.studentNo,name:s.name,updatedAt:s.updatedAt}))});
+        // 과도기 상태: Task 6에서 학급 코드 기반 스코프로 전면 교체될 때까지 classCode로만 필터.
+        const classCode=actor.role==='admin'?safeStr(url.searchParams.get('classCode')||'',8).toUpperCase():actor.classCode;
+        if(!classCode) return sendJson(res,200,{actor,students:[]});
+        const r=await db.query('SELECT id, class_code, nickname, updated_at FROM students WHERE class_code=$1 ORDER BY nickname',[classCode]);
+        return sendJson(res,200,{actor,students:r.rows.map(s=>({accountId:s.id,classCode:s.class_code,nickname:s.nickname,updatedAt:s.updated_at}))});
       }
       if(req.method==='GET'&&url.pathname==='/api/teacher/commands'){
-        const scope=scopeForActor(actor,url.searchParams.get('grade')||'',url.searchParams.get('classNo')||'');
-        return sendJson(res,200,{commands:store.listCommands({...scope,limit:300})});
+        const classCode=actor.role==='admin'?safeStr(url.searchParams.get('classCode')||'',8).toUpperCase():actor.classCode;
+        if(!classCode) return sendJson(res,400,{error:'학급 코드를 확인하세요.'});
+        const r=await db.query(
+          `SELECT tc.*, s.nickname, s.class_code FROM teacher_commands tc
+           JOIN students s ON s.id=tc.student_id WHERE s.class_code=$1 ORDER BY tc.created_at DESC LIMIT 300`,
+          [classCode]);
+        return sendJson(res,200,{commands:r.rows.map(row=>({
+          id:row.id, studentId:row.student_id, nickname:row.nickname, classCode:row.class_code,
+          amount:Number(row.amount), appliedAmount:row.applied_amount===null?null:Number(row.applied_amount),
+          reason:row.reason, status:row.status, createdBy:row.created_by, createdByName:row.created_by_name,
+          reversalOf:row.reversal_of, reversedBy:row.reversed_by, createdAt:row.created_at, appliedAt:row.applied_at,
+        }))});
       }
       if(req.method==='POST'&&url.pathname==='/api/teacher/command'){
-        const b=await readJson(req,200000); const amount=Math.trunc(Number(b.amount)); const reason=safeStr(b.reason,120); const ids=[...new Set((Array.isArray(b.accountIds)?b.accountIds:[]).map(String))];
-        if(!Number.isFinite(amount)||amount===0||Math.abs(amount)>1000000000) return sendJson(res,400,{error:'지급/차감 금액을 확인하세요.'}); if(!reason) return sendJson(res,400,{error:'지급/차감 사유를 입력하세요.'}); if(!ids.length) return sendJson(res,400,{error:'학생을 한 명 이상 선택하세요.'});
-        const allowed=[]; for(const id of ids){const s=store.getStudent(id); if(s&&actorCanManageStudent(actor,s)) allowed.push({id:crypto.randomUUID(),accountId:id,amount,reason});}
-        if(!allowed.length) return sendJson(res,403,{error:'선택한 학생을 관리할 권한이 없습니다.'}); store.addCommands(allowed,actor); return sendJson(res,200,{ok:true,count:allowed.length});
+        const b=await readJson(req,200000); const amount=Math.trunc(Number(b.amount)); const reason=safeStr(b.reason,120);
+        const uuidRe=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const ids=[...new Set((Array.isArray(b.studentIds)?b.studentIds:[]).map(String))].filter(id=>uuidRe.test(id));
+        if(!Number.isFinite(amount)||amount===0||Math.abs(amount)>1000000000) return sendJson(res,400,{error:'지급/차감 금액을 확인하세요.'});
+        if(!reason) return sendJson(res,400,{error:'지급/차감 사유를 입력하세요.'});
+        if(!ids.length) return sendJson(res,400,{error:'학생을 한 명 이상 선택하세요.'});
+        const rows=(await db.query('SELECT id, class_code FROM students WHERE id = ANY($1::uuid[])',[ids])).rows;
+        // 권한 체크는 Task 6에서 확정(현재는 shim이라 admin이 아닌 교사도 통과할 수 있음 — 허용된 과도기 상태).
+        const allowed=rows.filter(row=>actor.role==='admin'||actorCanManageStudent(actor,row));
+        if(!allowed.length) return sendJson(res,403,{error:'선택한 학생을 관리할 권한이 없습니다.'});
+        const results=[];
+        for(const row of allowed){
+          const cmdId=crypto.randomUUID();
+          let appliedAmount=0;
+          await withStudentState(row.id, async (state) => {
+            const {next,results:r}=applyTeacherCommands(state,[{id:cmdId,amount,reason,createdByName:actor.name}]);
+            appliedAmount=r[0].appliedAmount;
+            return {state:next};
+          });
+          await db.query(
+            `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, applied_at)
+             VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,now())`,
+            [cmdId, row.id, amount, appliedAmount, reason, actor.id, actor.name]);
+          results.push({studentId:row.id, appliedAmount});
+        }
+        return sendJson(res,200,{ok:true,count:results.length,results});
       }
       const cancelMatch=url.pathname.match(/^\/api\/teacher\/commands\/([^/]+)\/cancel$/);
       if(req.method==='POST'&&cancelMatch){
-        const id=cancelMatch[1]; const c=store.data.commands.find(x=>x.id===id); if(!c) return sendJson(res,404,{error:'명령을 찾을 수 없습니다.'}); const s=store.getStudent(c.accountId); if(!s||!actorCanManageStudent(actor,s)) return sendJson(res,403,{error:'이 학생을 관리할 권한이 없습니다.'});
-        return sendJson(res,200,store.cancelOrReverseCommand(id,actor));
+        const id=cancelMatch[1];
+        const cRes=await db.query('SELECT * FROM teacher_commands WHERE id=$1',[id]);
+        const c=cRes.rows[0]; if(!c) return sendJson(res,404,{error:'명령을 찾을 수 없습니다.'});
+        if(c.status==='CANCELLED') return sendJson(res,400,{error:'이미 취소된 명령입니다.'});
+        if(c.reversed_by) return sendJson(res,400,{error:'이미 취소(반대 거래) 처리된 명령입니다.'});
+        const sRes=await db.query('SELECT id, class_code FROM students WHERE id=$1',[c.student_id]);
+        const s=sRes.rows[0]; if(!s||!(actor.role==='admin'||actorCanManageStudent(actor,s))) return sendJson(res,403,{error:'이 학생을 관리할 권한이 없습니다.'});
+        const reversalId=crypto.randomUUID(); const reason='취소: '+c.reason; const amount=-Number(c.applied_amount);
+        let appliedAmount=0, appliedAt=null;
+        await withStudentState(c.student_id, async (state) => {
+          const {next,results:r}=applyTeacherCommands(state,[{id:reversalId,amount,reason,createdByName:actor.name}]);
+          appliedAmount=r[0].appliedAmount; appliedAt=r[0].appliedAt;
+          return {state:next};
+        });
+        await db.query(
+          `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, reversal_of, applied_at)
+           VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,$8,now())`,
+          [reversalId, c.student_id, amount, appliedAmount, reason, actor.id, actor.name, id]);
+        await db.query('UPDATE teacher_commands SET reversed_by=$2 WHERE id=$1',[id, reversalId]);
+        return sendJson(res,200,{kind:'reversal',command:{
+          id:reversalId, studentId:c.student_id, amount, appliedAmount, reason, status:'APPLIED',
+          createdBy:actor.id, createdByName:actor.name, reversalOf:id, appliedAt,
+        }});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/market-data'){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); return sendJson(res,200,{marketData:marketData.status(),universe:{count:universe.stocks.length,source:universe.source,updatedAt:universe.lastUpdatedAt}});
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/market-data/refresh-kr'){
-        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const r=await marketData.refreshKr(true); if(r.events)recordUniverseEvents(r.events); prices.clear(); return sendJson(res,200,{marketData:marketData.status()});
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const r=await marketData.refreshKr(true); if(r.events)await recordUniverseEvents(r.events); prices.clear(); return sendJson(res,200,{marketData:marketData.status()});
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/market-data/reload-us'){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); marketData.reloadUs(); prices.clear(); return sendJson(res,200,{marketData:marketData.status()});
@@ -695,17 +726,17 @@ const server=http.createServer(async(req,res)=>{
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/settings/fee'){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const b=await readJson(req,16384); const rate=Number(b.rate);
-        if(!Number.isFinite(rate)||rate<0||rate>0.01) return sendJson(res,400,{error:'수수료율은 0%~1% 범위로 입력하세요.'}); store.setSetting('tradeFeeRate',rate,actor); return sendJson(res,200,{tradeFeeRate:tradeFeeRate()});
+        if(!Number.isFinite(rate)||rate<0||rate>0.01) return sendJson(res,400,{error:'수수료율은 0%~1% 범위로 입력하세요.'}); await db.setSetting('tradeFeeRate',rate,actor); return sendJson(res,200,{tradeFeeRate:tradeFeeRate()});
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/settings/fx'){
         if(actor.role!=='admin')return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});const b=await readJson(req,16384);const mode=String(b.mode||'AUTO').toUpperCase()==='MANUAL'?'MANUAL':'AUTO';
-        if(mode==='MANUAL'){const rate=Number(b.rate);if(!Number.isFinite(rate)||rate<500||rate>3000)return sendJson(res,400,{error:'수동 환율은 1달러당 500~3000원 범위로 입력하세요.'});store.setSetting('usdKrwRate',Math.round(rate*100)/100,actor);}store.setSetting('fxMode',mode,actor);if(mode==='AUTO')await refreshAutoFx(true);prices.clear();return sendJson(res,200,{usdKrwRate:usdKrwRate(),fx:fxInfo()});
+        if(mode==='MANUAL'){const rate=Number(b.rate);if(!Number.isFinite(rate)||rate<500||rate>3000)return sendJson(res,400,{error:'수동 환율은 1달러당 500~3000원 범위로 입력하세요.'});await db.setSetting('usdKrwRate',Math.round(rate*100)/100,actor);}await db.setSetting('fxMode',mode,actor);if(mode==='AUTO')await refreshAutoFx(true);prices.clear();return sendJson(res,200,{usdKrwRate:usdKrwRate(),fx:fxInfo()});
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/settings/fx/refresh'){
         if(actor.role!=='admin')return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});const info=await refreshAutoFx(true);prices.clear();return sendJson(res,200,{fx:info});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/corporate-actions'){
-        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); return sendJson(res,200,{actions:store.listCorporateActions({limit:500})});
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); return sendJson(res,200,{actions:db.listCorporateActions({limit:500})});
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/corporate-actions'){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const b=await readJson(req,50000);
@@ -714,14 +745,14 @@ const server=http.createServer(async(req,res)=>{
         if(['CODE_CHANGE','MERGER'].includes(type)&&(!newCode||!getStock(newCode))) return sendJson(res,400,{error:'변경/합병 후 종목코드 또는 미국 티커를 현재 종목 목록에서 확인하세요.'});
         const ratioNum=Number(b.ratioNum||1),ratioDen=Number(b.ratioDen||1),settlementPrice=Math.max(0,Number(b.settlementPrice||0)),cashPerOldShare=Math.max(0,Number(b.cashPerOldShare||0));
         if(['SPLIT','REVERSE_SPLIT','CODE_CHANGE','MERGER'].includes(type)&&(!(ratioNum>0)||!(ratioDen>0))) return sendJson(res,400,{error:'교환비율을 확인하세요.'});
-        const oldStock=getStock(oldCode),newStock=getStock(newCode); const action=store.addCorporateAction({type,oldCode,newCode:newCode||oldCode,oldName:safeStr(b.oldName,80)||oldStock?.name||'',newName:safeStr(b.newName,80)||newStock?.name||oldStock?.name||'',ratioNum,ratioDen,settlementPrice,cashPerOldShare,effectiveDate:safeStr(b.effectiveDate,10)||new Date().toISOString().slice(0,10),note:safeStr(b.note,200),source:'MANUAL',status:'ACTIVE'},actor);
+        const oldStock=getStock(oldCode),newStock=getStock(newCode); const action=await db.addCorporateAction({type,oldCode,newCode:newCode||oldCode,oldName:safeStr(b.oldName,80)||oldStock?.name||'',newName:safeStr(b.newName,80)||newStock?.name||oldStock?.name||'',ratioNum,ratioDen,settlementPrice,cashPerOldShare,effectiveDate:safeStr(b.effectiveDate,10)||new Date().toISOString().slice(0,10),note:safeStr(b.note,200),source:'MANUAL',status:'ACTIVE'},actor);
         return sendJson(res,200,{action});
       }
       const caMatch=url.pathname.match(/^\/api\/admin\/corporate-actions\/([^/]+)$/);
       if(req.method==='POST'&&caMatch){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const b=await readJson(req,50000); const patch={};
         if(['ACTIVE','PENDING_REVIEW','DISABLED'].includes(String(b.status||'')))patch.status=String(b.status); for(const k of ['settlementPrice','cashPerOldShare','ratioNum','ratioDen'])if(k in b)patch[k]=Math.max(0,Number(b[k]||0)); if('newCode'in b){const raw=safeStr(b.newCode,50);patch.newCode=resolveStockCode(raw)||raw;} if('newName'in b)patch.newName=safeStr(b.newName,80); if('note'in b)patch.note=safeStr(b.note,200);
-        return sendJson(res,200,{action:store.updateCorporateAction(caMatch[1],patch,actor)});
+        return sendJson(res,200,{action:await db.updateCorporateAction(caMatch[1],patch,actor)});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/teachers'){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});
@@ -781,12 +812,12 @@ const server=http.createServer(async(req,res)=>{
 
 server.keepAliveTimeout=65_000; server.headersTimeout=66_000; server.maxConnections=2500;
 
-function recordUniverseEvents(events=[]){let n=0;for(const e of events){const a=store.upsertAutoCorporateAction(e);if(a)n++;}return n;}
+async function recordUniverseEvents(events=[]){let n=0;for(const e of events){const a=await db.upsertAutoCorporateAction(e);if(a)n++;}return n;}
 async function refreshMarketDataOnSchedule(){
-  try{const kr=await marketData.refreshKr(false);if(kr.events)recordUniverseEvents(kr.events);console.log(`[국내시세] ${kr.count||0}개 · 기준일 ${kr.asOfDate||'없음'}${kr.error?` · ${kr.error}`:''}`);}catch(e){console.warn('[국내시세] 초기 갱신 실패:',e.message);}
-  try{const r=await universe.refreshUsSymbols();const n=recordUniverseEvents(r.events);console.log(`[미국종목] Nasdaq Trader 공식 디렉터리 ${r.usCount.toLocaleString()}개 · 상태변화 ${n}건`);}catch(e){console.warn('[미국종목] 공식 심볼 디렉터리 갱신 실패. 기존 캐시를 사용합니다:',e.message);}
-  setInterval(async()=>{try{const r=await marketData.refreshKr(true);if(r.events)recordUniverseEvents(r.events);prices.clear();}catch(e){console.warn('[국내시세] 주기 갱신 실패:',e.message);}},PUBLIC_DATA_REFRESH_MS).unref();
-  setInterval(async()=>{try{const r=await universe.refreshUsSymbols();recordUniverseEvents(r.events);}catch(e){console.warn('[미국종목] 주기 갱신 실패:',e.message);}},US_SYMBOL_REFRESH_MS).unref();
+  try{const kr=await marketData.refreshKr(false);if(kr.events)await recordUniverseEvents(kr.events);console.log(`[국내시세] ${kr.count||0}개 · 기준일 ${kr.asOfDate||'없음'}${kr.error?` · ${kr.error}`:''}`);}catch(e){console.warn('[국내시세] 초기 갱신 실패:',e.message);}
+  try{const r=await universe.refreshUsSymbols();const n=await recordUniverseEvents(r.events);console.log(`[미국종목] Nasdaq Trader 공식 디렉터리 ${r.usCount.toLocaleString()}개 · 상태변화 ${n}건`);}catch(e){console.warn('[미국종목] 공식 심볼 디렉터리 갱신 실패. 기존 캐시를 사용합니다:',e.message);}
+  setInterval(async()=>{try{const r=await marketData.refreshKr(true);if(r.events)await recordUniverseEvents(r.events);prices.clear();}catch(e){console.warn('[국내시세] 주기 갱신 실패:',e.message);}},PUBLIC_DATA_REFRESH_MS).unref();
+  setInterval(async()=>{try{const r=await universe.refreshUsSymbols();await recordUniverseEvents(r.events);}catch(e){console.warn('[미국종목] 주기 갱신 실패:',e.message);}},US_SYMBOL_REFRESH_MS).unref();
 }
 
 async function main(){
