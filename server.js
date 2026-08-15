@@ -225,6 +225,17 @@ function scopeForActor(actor, requestedGrade='', requestedClass='') {
 function actorCanManageStudent(actor, student) {
   return actor.role === 'admin' || (String(student.grade)===String(actor.grade) && String(student.classNo)===String(actor.classNo));
 }
+/**
+ * 교사 지급/차감·취소 엔드포인트가 실제로 사용하는 권한 체크. actorCanManageStudent(위)는
+ * grade/classNo 기반 shim이라 둘 다 undefined일 때 항상 true를 반환하는 fail-open 결함이
+ * 있었다(보안 리뷰 지적, 즉시 수정). class_code는 이미 조회한 데이터라 여기서 바로 비교하고,
+ * 교사(admin 아님)에게 classCode가 없으면 fail-closed로 거부한다. Task 6에서 학급 코드 기반
+ * 스코프 모델 전체가 이 자리를 대체할 예정.
+ */
+function actorCanManageStudentByClassCode(actor, studentClassCode) {
+  if (actor.role === 'admin') return true;
+  return Boolean(actor.classCode) && actor.classCode === studentClassCode;
+}
 
 /** DB 기반 학생 계정 상태 초기값. classCode는 상태에 저장하지 않음(students.class_code가 원본) */
 function newState({accountId, nickname, classCode, grade, classNo, initialCash}) {
@@ -592,6 +603,7 @@ const server=http.createServer(async(req,res)=>{
           const r=applyTrade(state,side,code,qty,quote,comment);
           return {state:r.next, extra:r};
         });
+        if(auth.epo!==result.row.token_epoch) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
         tradeCount++;
         const r=result.extra;
         return sendJson(res,200,{state:result.state,execution:{side,code,displayCode:displayStockCode(stock),name:stock.name,market:stock.market,country:stock.country||'KR',currency:quote.currency||stock.currency||'KRW',nativePrice:Number(quote.nativePrice||quote.price),fxRate:Number(quote.fxRate||1),qty,price:quote.price,amount:r.gross,grossAmount:r.gross,fee:r.fee,feeRate:tradeFeeRate(),netAmount:r.netAmount,at:result.state.updatedAt,source:quote.source,sourceLabel:quote.sourceLabel||'',asOfDate:quote.asOfDate||''}});
@@ -607,6 +619,7 @@ const server=http.createServer(async(req,res)=>{
           tx.comment=comment; tx.commentUpdatedAt=new Date().toISOString(); next.version=Number(next.version||0)+1; next.updatedAt=new Date().toISOString(); next.schema=Math.max(3,Number(next.schema||1));
           return {state:next};
         });
+        if(auth.epo!==result.row.token_epoch) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
         return sendJson(res,200,{state:result.state});
       }catch(e){return sendJson(res,e.status||400,{error:e.message||'거래 메모를 저장하지 못했습니다.'});}
     }
@@ -665,10 +678,9 @@ const server=http.createServer(async(req,res)=>{
         if(!reason) return sendJson(res,400,{error:'지급/차감 사유를 입력하세요.'});
         if(!ids.length) return sendJson(res,400,{error:'학생을 한 명 이상 선택하세요.'});
         const rows=(await db.query('SELECT id, class_code FROM students WHERE id = ANY($1::uuid[])',[ids])).rows;
-        // 권한 체크는 Task 6에서 확정(현재는 shim이라 admin이 아닌 교사도 통과할 수 있음 — 허용된 과도기 상태).
-        const allowed=rows.filter(row=>actor.role==='admin'||actorCanManageStudent(actor,row));
+        const allowed=rows.filter(row=>actorCanManageStudentByClassCode(actor,row.class_code));
         if(!allowed.length) return sendJson(res,403,{error:'선택한 학생을 관리할 권한이 없습니다.'});
-        const results=[];
+        const results=[]; const auditCommands=[];
         for(const row of allowed){
           const cmdId=crypto.randomUUID();
           let appliedAmount=0;
@@ -682,7 +694,9 @@ const server=http.createServer(async(req,res)=>{
              VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,now())`,
             [cmdId, row.id, amount, appliedAmount, reason, actor.id, actor.name]);
           results.push({studentId:row.id, appliedAmount});
+          auditCommands.push({studentId:row.id, commandId:cmdId, appliedAmount});
         }
+        await db.audit('COMMAND_CREATE', actor, {amount, reason, count:results.length, commands:auditCommands});
         return sendJson(res,200,{ok:true,count:results.length,results});
       }
       const cancelMatch=url.pathname.match(/^\/api\/teacher\/commands\/([^/]+)\/cancel$/);
@@ -690,10 +704,10 @@ const server=http.createServer(async(req,res)=>{
         const id=cancelMatch[1];
         const cRes=await db.query('SELECT * FROM teacher_commands WHERE id=$1',[id]);
         const c=cRes.rows[0]; if(!c) return sendJson(res,404,{error:'명령을 찾을 수 없습니다.'});
+        const sRes=await db.query('SELECT id, class_code FROM students WHERE id=$1',[c.student_id]);
+        const s=sRes.rows[0]; if(!s||!actorCanManageStudentByClassCode(actor,s.class_code)) return sendJson(res,403,{error:'이 학생을 관리할 권한이 없습니다.'});
         if(c.status==='CANCELLED') return sendJson(res,400,{error:'이미 취소된 명령입니다.'});
         if(c.reversed_by) return sendJson(res,400,{error:'이미 취소(반대 거래) 처리된 명령입니다.'});
-        const sRes=await db.query('SELECT id, class_code FROM students WHERE id=$1',[c.student_id]);
-        const s=sRes.rows[0]; if(!s||!(actor.role==='admin'||actorCanManageStudent(actor,s))) return sendJson(res,403,{error:'이 학생을 관리할 권한이 없습니다.'});
         const reversalId=crypto.randomUUID(); const reason='취소: '+c.reason; const amount=-Number(c.applied_amount);
         let appliedAmount=0, appliedAt=null;
         await withStudentState(c.student_id, async (state) => {
@@ -706,6 +720,7 @@ const server=http.createServer(async(req,res)=>{
            VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,$8,now())`,
           [reversalId, c.student_id, amount, appliedAmount, reason, actor.id, actor.name, id]);
         await db.query('UPDATE teacher_commands SET reversed_by=$2 WHERE id=$1',[id, reversalId]);
+        await db.audit('COMMAND_REVERSE', actor, {commandId:id, reversalId, studentId:c.student_id, amount, reason});
         return sendJson(res,200,{kind:'reversal',command:{
           id:reversalId, studentId:c.student_id, amount, appliedAmount, reason, status:'APPLIED',
           createdBy:actor.id, createdByName:actor.name, reversalOf:id, appliedAt,
