@@ -32,23 +32,18 @@
       <div class="welcome-copy">
         <div class="product-label">학교용 모의투자</div>
         <h1>공식 기준가격으로 배우는<br />나의 첫 투자 기록</h1>
-        <p>실제 돈은 사용하지 않습니다. 투자 기록은 이 기기에 PIN으로 암호화해 저장합니다.</p>
+        <p>실제 돈은 사용하지 않습니다. 학급 코드와 닉네임, PIN으로 로그인하면 어떤 기기에서도 같은 투자 기록을 이어서 볼 수 있습니다.</p>
       </div>
 
       <div class="welcome-card">
-        <div id="savedBox" class="saved-box hidden">
-          <div>
-            <span class="saved-kicker">이 기기의 저장 기록</span>
-            <strong id="savedLabel">저장된 투자 기록</strong>
-          </div>
-          <button id="continueBtn" class="btn btn-primary">이어하기</button>
+        <div class="login-form">
+          <label>학급 코드<input id="classCode" maxlength="8" autocapitalize="characters" autocomplete="off" placeholder="학급 코드 (예: TIGER5)" /></label>
+          <label>닉네임<input id="nickname" maxlength="10" autocomplete="off" placeholder="닉네임 (숫자 3자리 이상 금지)" /></label>
+          <label>PIN<input id="pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="••••" /></label>
         </div>
+        <button id="joinBtn" class="btn btn-primary btn-block btn-large">시작하기</button>
 
-        <button id="newBtn" class="btn btn-primary btn-block btn-large">새 계좌 만들기</button>
-        <button id="importBtn" class="btn btn-secondary btn-block">백업 파일 불러오기</button>
-        <input id="importFile" type="file" accept=".stocksave,.json" hidden />
-
-        <div class="notice">PIN은 서버로 전송되지 않습니다. 교사가 지급·차감한 금액은 접속 중 자동 반영됩니다.</div>
+        <div class="notice">처음이면 새 계좌가 만들어지고, 이미 있으면 PIN으로 로그인합니다. PIN을 잊으면 선생님께 재설정을 요청하세요.</div>
         <a class="text-link" href="/teacher.html">교사용 관리 화면</a>
       </div>
     </section>
@@ -59,7 +54,6 @@
           <div id="profileClass" class="account-class">-</div>
           <strong id="profileName" class="account-name">-</strong>
         </div>
-        <button id="lockBtn" class="btn btn-quiet btn-small">잠그기</button>
       </div>
 
       <section id="tab-home" class="tabpage">
@@ -159,28 +153,16 @@
       </section>
 
       <section id="tab-settings" class="tabpage hidden">
-        <div class="page-heading"><h1>MY</h1><p>학급 정보와 저장 설정을 관리합니다. 미국주식은 자동 USD/KRW 환율을 기본으로 원화 자산에 합산되며, 학교 관리자가 원하면 수동 환율로 전환할 수 있습니다.</p></div>
+        <div class="page-heading"><h1>MY</h1><p>학급 정보를 확인하고 로그아웃할 수 있습니다. 미국주식은 자동 USD/KRW 환율을 기본으로 원화 자산에 합산되며, 학교 관리자가 원하면 수동 환율로 전환할 수 있습니다.</p></div>
 
         <article class="settings-section">
           <h2>학급 정보</h2>
-          <p>학년이 올라가거나 반이 바뀌면 수정하세요.</p>
-          <div class="form-grid compact-form">
-            <label>학년<input id="setGrade" inputmode="numeric" maxlength="2" /></label>
-            <label>반<input id="setClass" inputmode="numeric" maxlength="2" /></label>
-          </div>
-          <button id="updateClassBtn" class="btn btn-primary">학급 정보 변경</button>
-        </article>
-
-        <article class="settings-section">
-          <h2>저장과 백업</h2>
-          <p>거래와 교사 지급·차감이 반영될 때마다 자동 저장됩니다.</p>
+          <p>학급 코드와 닉네임으로 로그인한 계정입니다.</p>
+          <div class="save-info" id="accountInfo"></div>
           <div class="settings-actions">
-            <button id="backupBtn" class="btn btn-primary">백업 파일 저장</button>
-            <button id="verifyBtn" class="btn btn-secondary">세이브 무결성 확인</button>
             <button id="installAppBtn" class="btn btn-secondary hidden">이 기기에 앱 설치</button>
-            <button id="deleteBtn" class="btn btn-danger">이 기기의 기록 삭제</button>
+            <button id="logoutBtn" class="btn btn-danger">로그아웃</button>
           </div>
-          <div class="save-info" id="saveInfo"></div>
         </article>
 
         <article class="settings-section">
@@ -205,28 +187,6 @@
       </nav>
     </section>
   </main>
-
-  <dialog id="newDialog">
-    <form method="dialog" class="dialog-form account-dialog">
-      <button class="dialog-close" value="cancel" aria-label="닫기">×</button>
-      <div class="dialog-heading"><span>새 계좌</span><h2>100만원으로 시작합니다</h2><p>학생 정보와 4자리 PIN을 입력하세요.</p></div>
-      <div class="two-col"><label>학년<input id="grade" inputmode="numeric" maxlength="2" placeholder="4" required /></label><label>반<input id="classNo" inputmode="numeric" maxlength="2" placeholder="3" required /></label></div>
-      <label>학생 번호<input id="studentNo" inputmode="numeric" maxlength="4" placeholder="12" required /></label>
-      <label>이름<input id="studentName" maxlength="30" placeholder="홍길동" required /></label>
-      <label>4자리 PIN<input id="newPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="••••" required /></label>
-      <label>PIN 확인<input id="newPin2" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="••••" required /></label>
-      <button id="createAccountBtn" type="button" class="btn btn-primary btn-block btn-large">계좌 만들기</button>
-    </form>
-  </dialog>
-
-  <dialog id="pinDialog">
-    <form method="dialog" class="dialog-form pin-dialog">
-      <button class="dialog-close" value="cancel" aria-label="닫기">×</button>
-      <div class="dialog-heading"><span>저장 기록</span><h2>PIN 입력</h2><p id="pinLabel">4자리 PIN을 입력하세요.</p></div>
-      <label>PIN<input id="loadPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="••••" /></label>
-      <button id="unlockBtn" type="button" class="btn btn-primary btn-block btn-large">불러오기</button>
-    </form>
-  </dialog>
 
   <dialog id="tradeDialog" class="stock-dialog">
     <div class="stock-detail">
