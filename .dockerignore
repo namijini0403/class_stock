@@ -1,0 +1,16 @@
+.git
+node_modules
+runtime
+mobile
+docs
+.claude
+.env
+.env.*
+ADMIN_PASSWORD.txt
+PUBLIC_DATA_KEY.txt
+data/server-data.json
+data/kr-public-prices.json
+data/iex-us-prices.json
+*.cmd
+*.log
+load-test.mjs
