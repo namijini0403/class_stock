@@ -170,7 +170,10 @@ function sendJson(res, status, data) {
   });
   res.end(body);
 }
-function clientIp(req){ if (IS_PRODUCTION) { const f = String(req.headers['x-forwarded-for']||'').split(',')[0].trim(); if (f) return f; } return req.socket.remoteAddress || ''; }
+// XFF의 마지막 항목만 신뢰한다: Railway 엣지가 실제 클라이언트 IP를 체인 맨 끝에 붙여 우리에게 전달하므로
+// 그 값만 신뢰 가능한 홉이다. 앞쪽 항목들은 클라이언트가 직접 써넣을 수 있는 값이라 스푸핑에 취약해
+// 앞쪽 값을 신뢰하면(예: split(',')[0]) 레이트리밋을 임의로 우회당할 수 있다.
+function clientIp(req){ if (IS_PRODUCTION) { const parts = String(req.headers['x-forwarded-for']||'').split(','); const f = parts[parts.length-1].trim(); if (f) return f; } return req.socket.remoteAddress || ''; }
 
 const rateBuckets = new Map();
 const RATE_SWEEP_STALE_MS = 24 * 60 * 60 * 1000; // sweep staleness bound — callers' windowMs must stay well below this or their bucket can be swept mid-window
@@ -425,6 +428,12 @@ function applyTeacherCommands(state, commands) {
  * 커밋하기 전에 차단한다(컨트롤러 R4 — 예전에는 트랜잭션 커밋 후 호출부에서 검사해
  * 불일치 응답 전에 이미 쓰기가 반영되는 결함이 있었다). null/undefined면 검사를 건너뛴다
  * (교사가 학생 대신 쓰는 지급/차감·취소 경로처럼 학생 토큰이 없는 호출).
+ *
+ * fn은 (state, client) 두 인자로 호출된다. client는 이 함수가 열어 둔 트랜잭션의 pg
+ * 커넥션이므로, state 커밋과 함께 원자적으로 반영되어야 하는 부가 쓰기(예: 교사 명령 감사
+ * 로우 INSERT/UPDATE)는 fn 안에서 db.query 대신 이 client로 실행해야 크래시/에러 시
+ * ROLLBACK으로 함께 되돌아간다. 기존 호출부처럼 fn(state)만 받는 콜백도 두 번째 인자를
+ * 무시하면 그대로 동작한다.
  */
 async function withStudentState(sid, expectedEpoch, fn) {
   return db.withTransaction(async (client) => {
@@ -440,7 +449,7 @@ async function withStudentState(sid, expectedEpoch, fn) {
     const ca = applyCorporateActions(state, db.getEffectiveCorporateActions());
     if (ca.applied.length) state = ca.next;
     // 2) 호출자 mutation (fn이 null이면 읽기/새로고침)
-    const out = fn ? await fn(state) : { state };
+    const out = fn ? await fn(state, client) : { state };
     state = out.state;
     // 최적화: 기업행동도 없고 fn도 없었으면(순수 읽기) UPDATE를 건너뛴다.
     if (fn || ca.applied.length) {
@@ -480,7 +489,7 @@ function summarizeState(state) {
 function serveStatic(req,res){
   let pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname); if(pathname==='/') pathname='/index.html';
   const file=path.normalize(path.join(PUBLIC_DIR,pathname));
-  if(!file.startsWith(PUBLIC_DIR)||!fs.existsSync(file)||fs.statSync(file).isDirectory()) return sendJson(res,404,{error:'Not found'});
+  if((file!==PUBLIC_DIR&&!file.startsWith(PUBLIC_DIR+path.sep))||!fs.existsSync(file)||fs.statSync(file).isDirectory()) return sendJson(res,404,{error:'Not found'});
   const ext=path.extname(file).toLowerCase(); const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.webmanifest':'application/manifest+json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon'};
   res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':ext==='.html'?'no-store':'public, max-age=300','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",...(IS_PRODUCTION ? {'Strict-Transport-Security':'max-age=31536000; includeSubDomains'} : {})});
   fs.createReadStream(file).pipe(res);
@@ -525,6 +534,7 @@ const server=http.createServer(async(req,res)=>{
       return sendJson(res,200,{quotes});
     }
     if(req.method==='GET'&&url.pathname==='/api/news'){
+      if(!rateLimitOk('news:'+clientIp(req),10,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const code=String(url.searchParams.get('code')||'').trim();
       if(!code||!getStock(code)) return sendJson(res,400,{error:'종목코드를 확인하세요.'});
       try {
@@ -537,9 +547,14 @@ const server=http.createServer(async(req,res)=>{
     }
 
     if(req.method==='POST'&&url.pathname==='/api/auth/join'){
-      if(!rateLimitOk('join:'+clientIp(req),10,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const b=await readJson(req,16384);
+      // 학교 NAT 환경에서는 한 반 전체가 공인 IP 하나를 공유하므로 IP만으로 제한하면 개학 첫날
+      // 단체 가입이 막힌다. classCode까지 묶어 반별로 넉넉히 허용하고, IP 단독 폭주에 대비해
+      // 더 느슨한 순수 IP 백스톱을 별도로 둔다.
       const classCode=String(b.classCode||'').trim().toUpperCase();
+      const okJoin=rateLimitOk('join:'+clientIp(req)+':'+classCode,60,60000);
+      const okJoinIp=rateLimitOk('joinip:'+clientIp(req),120,60000);
+      if(!okJoin||!okJoinIp) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       if(!/^[A-Z0-9]{3,8}$/.test(classCode)) return sendJson(res,400,{error:'학급 코드를 확인하세요. (영문 대문자·숫자 3~8자)'});
       const nickname=safeStr(b.nickname,10);
       if(!nickname) return sendJson(res,400,{error:'닉네임을 입력하세요.'});
@@ -634,6 +649,7 @@ const server=http.createServer(async(req,res)=>{
     }
     if(req.method==='POST'&&url.pathname==='/api/transaction/comment'){
       const auth=getStudentAuth(req); if(!auth) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
+      if(!rateLimitOk('comment:'+auth.sid,30,60000)) return sendJson(res,429,{error:'요청이 너무 잦습니다. 잠시 후 다시 시도하세요.'});
       try{
         const b=await readJson(req,16384); const transactionId=safeStr(b.transactionId,80); const comment=safeStr(b.comment,80);
         const result=await withStudentState(auth.sid, Number(auth.epo||0), async (state) => {
@@ -651,7 +667,7 @@ const server=http.createServer(async(req,res)=>{
       const b=await readJson(req,16384); const id=safeStr(b.id,40), password=String(b.password||'');
       const ah=lockoutHash('teacher', id);
       const lock=await db.checkLockout('teacher', ah);
-      if(lock.locked) return sendJson(res,423,{error:`PIN을 여러 번 틀려 잠시 잠겼습니다. ${lock.remainingSec}초 후 다시 시도하세요.`});
+      if(lock.locked) return sendJson(res,423,{error:`비밀번호를 여러 번 틀려 잠시 잠겼습니다. ${lock.remainingSec}초 후 다시 시도하세요.`});
       let actor=null;
       if(id==='admin'){
         if(ADMIN_PASSWORD&&safeEqual(password,ADMIN_PASSWORD)) actor={id:'admin',name:'학교 관리자',role:'admin',classCode:null};
@@ -710,15 +726,17 @@ const server=http.createServer(async(req,res)=>{
         for(const row of allowed){
           const cmdId=crypto.randomUUID();
           let appliedAmount=0;
-          await withStudentState(row.id, null, async (state) => {
+          await withStudentState(row.id, null, async (state, client) => {
             const {next,results:r}=applyTeacherCommands(state,[{id:cmdId,amount,reason,createdByName:actor.name}]);
             appliedAmount=r[0].appliedAmount;
+            // state 커밋과 같은 트랜잭션 안에서 감사 로우를 기록해, 크래시 시 상태만 바뀌고
+            // 명령 기록이 유실되는 경우를 없앤다.
+            await client.query(
+              `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, applied_at)
+               VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,now())`,
+              [cmdId, row.id, amount, appliedAmount, reason, actor.id, actor.name]);
             return {state:next};
           });
-          await db.query(
-            `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, applied_at)
-             VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,now())`,
-            [cmdId, row.id, amount, appliedAmount, reason, actor.id, actor.name]);
           results.push({studentId:row.id, appliedAmount});
           auditCommands.push({studentId:row.id, commandId:cmdId, appliedAmount});
         }
@@ -736,16 +754,18 @@ const server=http.createServer(async(req,res)=>{
         if(c.reversed_by) return sendJson(res,400,{error:'이미 취소(반대 거래) 처리된 명령입니다.'});
         const reversalId=crypto.randomUUID(); const reason='취소: '+c.reason; const amount=-Number(c.applied_amount);
         let appliedAmount=0, appliedAt=null;
-        await withStudentState(c.student_id, null, async (state) => {
+        await withStudentState(c.student_id, null, async (state, client) => {
           const {next,results:r}=applyTeacherCommands(state,[{id:reversalId,amount,reason,createdByName:actor.name}]);
           appliedAmount=r[0].appliedAmount; appliedAt=r[0].appliedAt;
+          // 원본 명령의 reversed_by 갱신까지 같은 트랜잭션에 묶어, 크래시로 상태만 롤백되고
+          // reversed_by는 남는(이중 취소가 가능해지는) 상황을 막는다.
+          await client.query(
+            `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, reversal_of, applied_at)
+             VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,$8,now())`,
+            [reversalId, c.student_id, amount, appliedAmount, reason, actor.id, actor.name, id]);
+          await client.query('UPDATE teacher_commands SET reversed_by=$2 WHERE id=$1',[id, reversalId]);
           return {state:next};
         });
-        await db.query(
-          `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, reversal_of, applied_at)
-           VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,$8,now())`,
-          [reversalId, c.student_id, amount, appliedAmount, reason, actor.id, actor.name, id]);
-        await db.query('UPDATE teacher_commands SET reversed_by=$2 WHERE id=$1',[id, reversalId]);
         await db.audit('COMMAND_REVERSE', actor, {commandId:id, reversalId, studentId:c.student_id, amount, reason});
         return sendJson(res,200,{kind:'reversal',command:{
           id:reversalId, studentId:c.student_id, amount, appliedAmount, reason, status:'APPLIED',
