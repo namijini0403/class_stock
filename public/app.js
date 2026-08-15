@@ -68,17 +68,21 @@ function renderHistoryCards(){if(!state||!$('#historyCards'))return;const tx=sta
 async function editTradeComment(id){if(!state)return;const tx=(state.transactions||[]).find(t=>t.id===id&&t.type==='TRADE');if(!tx)return toast('거래 기록을 찾을 수 없습니다.');const value=prompt('이 거래에 남길 짧은 메모를 입력하세요. (최대 80자)\n빈칸으로 저장하면 메모가 삭제됩니다.',tx.comment||'');if(value===null)return;try{const d=await api('/api/transaction/comment',{method:'POST',body:JSON.stringify({transactionId:id,comment:value.slice(0,80)})});state=d.state;renderHistory();renderHistoryCards();toast('거래 메모를 저장했습니다.')}catch(e){toast(e.message)}}
 function renderAll(){renderStats();renderHome();renderMarket();renderPortfolio();renderHistory();renderHistoryCards()}
 
-function prefillLogin(){
+function loadCsLogin(){
   try{
     const raw=localStorage.getItem('cs_login');
-    if(raw){
-      const info=JSON.parse(raw);
-      if(info&&info.at&&Date.now()-info.at<10*24*3600*1000){
-        if(info.classCode&&$('#classCode'))$('#classCode').value=info.classCode;
-        if(info.nickname&&$('#nickname'))$('#nickname').value=info.nickname;
-      }
-    }
+    if(!raw)return null;
+    const info=JSON.parse(raw);
+    if(info&&info.at&&Date.now()-info.at<10*24*3600*1000)return info;
   }catch{}
+  return null;
+}
+function prefillLogin(){
+  const info=loadCsLogin();
+  if(info){
+    if(info.classCode&&$('#classCode'))$('#classCode').value=info.classCode;
+    if(info.nickname&&$('#nickname'))$('#nickname').value=info.nickname;
+  }
   $('#app').classList.add('hidden');
   $('#welcome').classList.remove('hidden');
 }
@@ -101,7 +105,7 @@ async function join(){
     const d=await api('/api/auth/join',{method:'POST',body:JSON.stringify({classCode,nickname,pin})});
     accessToken=d.accessToken;refreshToken=d.refreshToken;localStorage.setItem('cs_refresh',refreshToken);
     state=d.state;studentInfo={classCode:d.classCode,className:d.className,nickname:d.nickname};
-    localStorage.setItem('cs_login',JSON.stringify({classCode:d.classCode,nickname:d.nickname,at:Date.now()}));
+    localStorage.setItem('cs_login',JSON.stringify({classCode:d.classCode,className:d.className,nickname:d.nickname,at:Date.now()}));
     showApp();
     toast(`${d.nickname}님, 환영합니다.`);
   }catch(e){toast(e.message)}
@@ -148,6 +152,8 @@ async function init(){
   refreshQuotes(displayedStocks.map(x=>x.code));
 
   if(refreshToken){
+    const cached=loadCsLogin();
+    if(cached)studentInfo={classCode:cached.classCode,className:cached.className,nickname:cached.nickname};
     const ok=await tryRefresh().catch(()=>false);
     if(ok){
       try{await refreshMe();showApp();return}catch{}

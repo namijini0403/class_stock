@@ -57,9 +57,8 @@ a{color:inherit;text-decoration:none}
 .welcome-copy{padding:16px 4px}.product-label{color:var(--primary);font-weight:800;font-size:13px;margin-bottom:14px}
 .welcome-copy h1{margin:0;font-size:39px;line-height:1.22;letter-spacing:-.045em}.welcome-copy p{margin:18px 0 0;color:var(--muted);font-size:16px;line-height:1.75;max-width:500px}
 .welcome-card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:24px;box-shadow:var(--shadow)}
-.welcome-card>.btn+.btn{margin-top:9px}.saved-box{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 0 18px;margin-bottom:16px;border-bottom:1px solid var(--line)}
+.welcome-card>.btn+.btn{margin-top:9px}
 .login-form{margin-bottom:16px}.login-form label{display:block;color:#575e68;font-size:11px;font-weight:700}.login-form label+label{margin-top:10px}.login-form input{width:100%;margin-top:5px;padding:10px 11px;min-height:42px;border:1px solid var(--line-strong);border-radius:8px}
-.saved-kicker{display:block;color:var(--muted);font-size:11px;margin-bottom:2px}.saved-box strong{display:block;font-size:13px;max-width:185px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .notice{font-size:11px;color:var(--muted);line-height:1.65;margin:16px 0 8px}
 
 /* app shell */
