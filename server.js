@@ -943,7 +943,7 @@ async function refreshMarketDataOnSchedule(){
 async function main(){
   await db.init();
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.0.1: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.0.2: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (1시간마다 확인)');

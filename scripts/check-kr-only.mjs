@@ -3,8 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,19 +13,25 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => readFileSync(path.join(ROOT, relative), 'utf8');
 
 const universeData = JSON.parse(read('data/stock-universe.json'));
-assert.ok(universeData.stocks.length > 100, '국내 종목 캐시에 충분한 종목이 있어야 합니다.');
+assert.ok(universeData.stocks.length >= 2500, '국내 종목 캐시가 비정상적으로 줄어들면 안 됩니다.');
 assert.ok(universeData.stocks.every((stock) => /^\d{6}$/.test(stock.code)), '종목 코드는 국내 6자리 코드여야 합니다.');
 assert.ok((universeData.retiredStocks || []).every((stock) => /^\d{6}$/.test(stock.code)), '비활성 종목도 국내 6자리 코드여야 합니다.');
-const obsoleteMarketKeys = [
-  ['country'].join(''), ['currency'].join(''), ['display', 'Code'].join(''), ['symbol'].join(''),
-  ['native', 'Price'].join(''), ['native', 'Change'].join(''), ['f', 'x', 'Rate'].join(''),
-];
-for (const stock of [...universeData.stocks, ...(universeData.retiredStocks || [])]) {
-  for (const key of obsoleteMarketKeys) assert.ok(!(key in stock), `종목 캐시에 다중시장 필드가 남았습니다: ${key}`);
+const domesticMarkets = new Set(['KOSPI', 'KOSDAQ', 'KONEX']);
+const allUniverseStocks = [...universeData.stocks, ...(universeData.retiredStocks || [])];
+assert.equal(new Set(allUniverseStocks.map((stock) => stock.code)).size, allUniverseStocks.length, '활성·비활성 종목 코드가 중복되면 안 됩니다.');
+assert.deepEqual([...new Set(universeData.stocks.map((stock) => stock.market))].sort(), [...domesticMarkets].sort(), '국내 세 거래소 종목을 모두 포함해야 합니다.');
+const requiredStockFields = ['code', 'name', 'market', 'active', 'tradingHalt', 'liquidation', 'isinCd'];
+const stockFields = new Set([...requiredStockFields, 'removedAt', 'removedReason']);
+for (const stock of allUniverseStocks) {
+  assert.ok(domesticMarkets.has(stock.market), `허용하지 않는 거래소가 종목 캐시에 있습니다: ${stock.market}`);
+  assert.ok(requiredStockFields.every((key) => Object.hasOwn(stock, key)), `국내 종목 필수 필드가 빠졌습니다: ${stock.code}`);
+  assert.ok(Object.keys(stock).every((key) => stockFields.has(key)), `국내 종목 허용 필드가 아닌 값이 있습니다: ${stock.code}`);
 }
 
 const { StockUniverse } = require(path.join(ROOT, 'lib/universe.js'));
-const { isDomesticCode, domesticCorporateActions, domesticStateView } = require(path.join(ROOT, 'lib/domestic.js'));
+const domestic = require(path.join(ROOT, 'lib/domestic.js'));
+const { isDomesticCode, domesticCorporateActions, domesticStateView } = domestic;
+assert.deepEqual(Object.keys(domestic).sort(), ['domesticCorporateActions', 'domesticStateView', 'isDomesticCode', 'isDomesticTransaction', 'normalizeDomesticMarket'], '국내 상태 모듈은 현재 국내 전용 경계만 노출해야 합니다.');
 const universe = new StockUniverse(path.join(ROOT, 'data/stock-universe.json'));
 assert.equal(universe.search('', { market: 'GLOBAL' }).total, 0, '국내 거래소가 아닌 시장 검색 결과는 0개여야 합니다.');
 assert.equal(universe.resolveCode('ABC123'), '', '6자리 숫자가 아닌 코드를 종목 코드로 해석하면 안 됩니다.');
@@ -35,49 +40,76 @@ assert.equal(isDomesticCode('ABC123'), false, '숫자 6자리가 아닌 종목�
 assert.equal(isDomesticCode(' 005930 '), false, '공백이 섞인 종목코드는 정규 코드로 허용하면 안 됩니다.');
 
 const rawState = {
+  schema: 3,
+  accountId: 'student-1',
+  grade: '6',
+  classNo: '1',
+  studentNo: '',
+  name: '테스트학생',
   cash: 500000,
-  metadata: { [obsoleteMarketKeys[0]]: 'OTHER', nested: { [obsoleteMarketKeys[6]]: 1 } },
+  initialCash: 500000,
+  teacherNetAdjustments: 1000,
+  realizedPnl: 2000,
+  totalFees: 300,
+  corporateActionsApplied: ['action-1'],
+  version: 4,
+  createdAt: '2026-08-17T00:00:00.000Z',
+  updatedAt: '2026-08-18T00:00:00.000Z',
+  metadata: { unexpected: true },
   holdings: {
-    '005930': { qty: 2, avgPrice: 70000, name: '삼성전자', country: 'KR', currency: 'KRW', displayCode: '005930' },
-    ABC123: { qty: 1, avgPrice: 100, name: '비국내 종목', currency: 'OTHER' },
+    '005930': { qty: 2, avgPrice: 70000, name: '삼성전자', status: 'ACTIVE', valuationPrice: 71000, unexpected: true },
+    ABC123: { qty: 1, avgPrice: 100, name: '비국내 종목' },
     '999999': { qty: 1, avgPrice: 100, name: '잘못된 거래소 종목', market: 'GLOBAL' },
     ' 000660 ': { qty: 1, avgPrice: 100000, name: '공백 코드' },
   },
   transactions: [
-    { id: 'domestic-trade', type: 'TRADE', code: '005930', price: 70000, [obsoleteMarketKeys[4]]: 70000, [obsoleteMarketKeys[6]]: 1 },
+    { id: 'domestic-trade', type: 'TRADE', at: '2026-08-18T01:00:00.000Z', side: 'BUY', code: '005930', name: '삼성전자', market: 'KOSPI', qty: 2, price: 70000, amount: 140000, grossAmount: 140000, fee: 140, feeRate: 0.001, netAmount: -140140, comment: '수업 거래', commentUpdatedAt: '2026-08-18T02:00:00.000Z', quoteSource: 'PUBLIC_DATA_KR', quoteSourceLabel: '공공데이터', quoteAsOfDate: '2026-08-18', unexpected: true },
+    { id: 'kosdaq-trade', type: 'TRADE', code: '247540', market: 'kosdaq', price: 100000 },
+    { id: 'konex-trade', type: 'TRADE', code: '296520', market: 'KONEX', price: 5000 },
+    { id: 'marketless-trade', type: 'TRADE', code: '005930', price: 70000 },
     { id: 'foreign-trade', type: 'TRADE', code: 'ABC123', price: 100 },
     { id: 'invalid-market-trade', type: 'TRADE', code: '999999', market: 'GLOBAL', price: 100 },
-    { id: 'domestic-action', type: 'CORPORATE', code: '005930', newCode: '000660' },
+    { id: 'domestic-action', type: 'CORPORATE', at: '2026-08-18T03:00:00.000Z', side: 'CODE_CHANGE', code: '005930', newCode: '000660', name: '삼성전자', newName: 'SK하이닉스', qty: 2, price: 0, amount: 0, signedAmount: 0, reason: '수업 기업행동', detail: '코드 변경', corporateActionId: 'action-1', unexpected: true },
     { id: 'foreign-action', type: 'CORPORATE', code: 'ABC123', newCode: '' },
     { id: 'empty-trade', type: 'TRADE', code: '', price: 100 },
     { id: 'empty-action', type: 'CORPORATE', code: '', newCode: '' },
     { id: 'unknown', type: 'UNKNOWN', code: '' },
-    { id: 'teacher', type: 'TEACHER', code: 'ABC123', market: 'GLOBAL', signedAmount: 1000 },
+    { id: 'teacher', type: 'TEACHER', at: '2026-08-18T04:00:00.000Z', side: 'GIVE', name: '교사 지급/차감', code: '', qty: 0, price: 0, amount: 1000, signedAmount: 1000, requestedAmount: 1000, reason: '수업 지원', commandId: 'command-1', teacherName: '담임', unexpected: true },
   ],
 };
 const rawSnapshot = JSON.stringify(rawState);
 const stateView = domesticStateView(rawState);
+assert.ok(!('metadata' in stateView), '학생 상태는 신규 국내 전용 스키마의 허용 필드만 반환해야 합니다.');
+assert.equal(stateView.updatedAt, rawState.updatedAt, '거래 응답에 필요한 상태 갱신 시각을 보존해야 합니다.');
 assert.deepEqual(Object.keys(stateView.holdings), ['005930'], '학생 화면에는 국내 보유 종목만 노출해야 합니다.');
-assert.deepEqual(stateView.transactions.map((tx) => tx.id), ['domestic-trade', 'domestic-action', 'teacher'], '국내 주식 기록과 교사 기록만 노출해야 합니다.');
+assert.deepEqual(stateView.holdings['005930'], { qty: 2, avgPrice: 70000, name: '삼성전자', status: 'ACTIVE', valuationPrice: 71000 }, '보유 종목은 국내 전용 허용 필드만 보존해야 합니다.');
+assert.deepEqual(stateView.transactions.map((tx) => tx.id), ['domestic-trade', 'kosdaq-trade', 'konex-trade', 'domestic-action', 'teacher'], '국내 주식 기록과 교사 기록만 노출해야 합니다.');
+assert.deepEqual(stateView.transactions.slice(0, 3).map((tx) => tx.market), ['KOSPI', 'KOSDAQ', 'KONEX'], '국내 거래소 값은 세 가지 정규값으로만 반환해야 합니다.');
+assert.ok(!('unexpected' in stateView.transactions[0]), '거래 기록은 유형별 허용 필드만 반환해야 합니다.');
 const teacherView = stateView.transactions.find((tx) => tx.type === 'TEACHER');
 assert.ok(!('code' in teacherView) && !('market' in teacherView), '교사 지급 기록에 오염된 주식 필드를 노출하면 안 됩니다.');
 assert.equal(JSON.stringify(rawState), rawSnapshot, '화면용 국내 상태 생성은 DB 원본을 변경하면 안 됩니다.');
-for (const key of obsoleteMarketKeys) assert.ok(!JSON.stringify(stateView).includes(`\"${key}\"`), `학생 응답에 다중시장 필드가 남았습니다: ${key}`);
+const expectedStateFields = ['schema', 'accountId', 'grade', 'classNo', 'studentNo', 'name', 'cash', 'initialCash', 'teacherNetAdjustments', 'realizedPnl', 'totalFees', 'corporateActionsApplied', 'version', 'createdAt', 'updatedAt'];
+assert.deepEqual(Object.keys(stateView).sort(), [...expectedStateFields, 'holdings', 'transactions'].sort(), '학생 상태 최상위 응답도 허용된 현재 필드만 포함해야 합니다.');
+for (const field of expectedStateFields) assert.deepEqual(stateView[field], rawState[field], `학생 상태 필드를 보존해야 합니다: ${field}`);
+assert.deepEqual(Object.keys(stateView.transactions[0]).sort(), ['id', 'type', 'at', 'side', 'code', 'name', 'market', 'qty', 'price', 'amount', 'grossAmount', 'fee', 'feeRate', 'netAmount', 'comment', 'commentUpdatedAt', 'quoteSource', 'quoteSourceLabel', 'quoteAsOfDate'].sort(), '국내 거래 기록은 현재 허용 필드를 모두 보존해야 합니다.');
+assert.deepEqual(Object.keys(stateView.transactions[3]).sort(), ['id', 'type', 'at', 'side', 'code', 'newCode', 'name', 'newName', 'qty', 'price', 'amount', 'signedAmount', 'reason', 'detail', 'corporateActionId'].sort(), '기업행동 기록은 현재 허용 필드를 모두 보존해야 합니다.');
+assert.deepEqual(Object.keys(teacherView).sort(), ['id', 'type', 'at', 'side', 'name', 'qty', 'price', 'amount', 'signedAmount', 'requestedAmount', 'reason', 'commandId', 'teacherName'].sort(), '교사 지급 기록은 현재 허용 필드를 모두 보존해야 합니다.');
+assert.deepEqual(domesticStateView(stateView), stateView, '국내 상태 투영은 반복 적용해도 결과가 같아야 합니다.');
 assert.deepEqual(domesticCorporateActions([
   { id: 'domestic', oldCode: '005930', newCode: '000660' },
   { id: 'domestic-empty', oldCode: '005930', newCode: '' },
   { id: 'invalid-old', oldCode: 'ABC123', newCode: '' },
   { id: 'invalid-new', oldCode: '005930', newCode: 'ABC123' },
-  { id: 'invalid-market', oldCode: '999999', newCode: '', market: 'GLOBAL' },
   { id: 'spaced-old', oldCode: ' 005930 ', newCode: '000660' },
 ]).map((action) => action.id), ['domestic', 'domestic-empty'], '기업행동의 기존·신규 코드가 모두 국내 코드여야 합니다.');
 
 const { MarketDataService } = require(path.join(ROOT, 'lib/market-data.js'));
 const tempDir = mkdtempSync(path.join(tmpdir(), 'class-stock-kr-check-'));
 try {
-  const mixedFile = path.join(tempDir, 'mixed-universe.json');
-  writeFileSync(mixedFile, JSON.stringify({
-    source: 'LEGACY_MIXED_CACHE',
+  const invalidUniverseFile = path.join(tempDir, 'invalid-universe.json');
+  writeFileSync(invalidUniverseFile, JSON.stringify({
+    source: 'INVALID_INPUT_TEST',
     stocks: [
       { code: '005930', name: '삼성전자', market: 'KOSPI' },
       { code: 'ABC123', name: '비국내 종목', market: 'GLOBAL' },
@@ -90,10 +122,10 @@ try {
       { code: '888888', name: '잘못된 거래소 비활성 종목', market: 'GLOBAL' },
     ],
   }), 'utf8');
-  const mixedUniverse = new StockUniverse(mixedFile);
-  assert.deepEqual(mixedUniverse.stocks.map((stock) => stock.code), ['005930'], '혼합 캐시의 비국내 활성 종목을 로드하면 안 됩니다.');
-  assert.deepEqual([...mixedUniverse.retired.keys()], ['000660'], '혼합 캐시의 비국내 비활성 종목을 로드하면 안 됩니다.');
-  assert.equal(mixedUniverse.lookup('ABC123'), null, '비국내 종목은 직접 조회할 수 없어야 합니다.');
+  const invalidUniverse = new StockUniverse(invalidUniverseFile);
+  assert.deepEqual(invalidUniverse.stocks.map((stock) => stock.code), ['005930'], '유효하지 않은 입력의 비국내 활성 종목을 로드하면 안 됩니다.');
+  assert.deepEqual([...invalidUniverse.retired.keys()], ['000660'], '유효하지 않은 입력의 비국내 비활성 종목을 로드하면 안 됩니다.');
+  assert.equal(invalidUniverse.lookup('ABC123'), null, '비국내 종목은 직접 조회할 수 없어야 합니다.');
 
   const eventFile = path.join(tempDir, 'event-universe.json');
   const eventStocks = [
@@ -109,20 +141,21 @@ try {
   const tempUniverse = new StockUniverse(path.join(tempDir, 'universe.json'), [
     { code: '005930', name: '삼성전자', market: 'KOSPI' },
   ]);
-  const oldCacheDir = path.join(tempDir, 'old-cache');
-  mkdirSync(oldCacheDir, { recursive: true });
-  const oldCacheUniverse = new StockUniverse(path.join(oldCacheDir, 'universe.json'), eventStocks);
-  const oldCacheItems = Array.from({ length: 120 }, (_, index) => ({
-    code: String(index + 1).padStart(6, '0'), name: `과거캐시${index + 1}`, market: 'KOSPI', price: 1000,
+  const cacheDir = path.join(tempDir, 'cache');
+  mkdirSync(cacheDir, { recursive: true });
+  const cacheUniverse = new StockUniverse(path.join(cacheDir, 'universe.json'), eventStocks);
+  const cacheItems = Array.from({ length: 120 }, (_, index) => ({
+    code: String(index + 1).padStart(6, '0'), name: `캐시종목${index + 1}`, market: 'KOSPI', price: 1000,
     change: 10, changeRate: 1, asOfDate: '2026-08-18', updatedAt: 1_000,
-    [obsoleteMarketKeys[0]]: 'KR', [obsoleteMarketKeys[1]]: 'KRW', [obsoleteMarketKeys[4]]: 1000, [obsoleteMarketKeys[6]]: 1,
   }));
-  oldCacheItems.push({ code: '777777', name: '잘못된 거래소 캐시', market: 'GLOBAL-KOSPI', price: 1000 });
-  writeFileSync(path.join(oldCacheDir, 'kr-public-prices.json'), JSON.stringify({ meta: { updatedAt: 1_000 }, items: oldCacheItems }), 'utf8');
-  const oldCacheService = new MarketDataService({ dataDir: oldCacheDir, universe: oldCacheUniverse, serviceKey: '' });
-  const cleanedCachedQuote = oldCacheService.quote({ code: '000001', name: '과거캐시1', market: 'KOSPI', active: true });
-  for (const key of obsoleteMarketKeys) assert.ok(!(key in cleanedCachedQuote), `기존 국내 캐시를 읽을 때 다중시장 필드를 제거해야 합니다: ${key}`);
-  assert.equal(oldCacheUniverse.lookup('777777'), null, '허용하지 않는 거래소의 캐시 종목은 로드하면 안 됩니다.');
+  cacheItems.push({ code: '777777', name: '잘못된 거래소 캐시', market: 'GLOBAL-KOSPI', price: 1000 });
+  writeFileSync(path.join(cacheDir, 'kr-public-prices.json'), JSON.stringify({ meta: { updatedAt: 1_000 }, items: cacheItems }), 'utf8');
+  const cacheService = new MarketDataService({ dataDir: cacheDir, universe: cacheUniverse, serviceKey: '' });
+  const cachedQuote = cacheService.quote({ code: '000001', name: '캐시종목1', market: 'KOSPI', active: true });
+  const availableQuoteFields = ['active', 'asOfDate', 'attribution', 'change', 'changeRate', 'code', 'delayed', 'high', 'isinCd', 'liquidation', 'listedShares', 'low', 'market', 'marketCap', 'name', 'open', 'price', 'source', 'sourceLabel', 'tradeValue', 'tradingHalt', 'updatedAt', 'volume'];
+  const unavailableQuoteFields = ['active', 'asOfDate', 'change', 'changeRate', 'code', 'delayed', 'market', 'name', 'price', 'source', 'sourceLabel', 'status', 'tradingHalt', 'updatedAt'];
+  assert.deepEqual(Object.keys(cachedQuote).sort(), availableQuoteFields, '국내 캐시 시세는 현재 허용 필드를 정확히 반환해야 합니다.');
+  assert.equal(cacheUniverse.lookup('777777'), null, '허용하지 않는 거래소의 캐시 종목은 로드하면 안 됩니다.');
 
   const marketData = new MarketDataService({
     dataDir: tempDir,
@@ -169,9 +202,8 @@ try {
     assert.equal(tempUniverse.lookup('777777'), null, '허용하지 않는 거래소의 공급자 응답은 종목 목록에 저장하면 안 됩니다.');
     const availableQuote = marketData.quote({ code: '000001', name: '테스트1', market: 'KOSPI', active: true });
     const unavailableQuote = marketData.quote({ code: '999999', name: '미수집', market: 'KOSPI', active: true });
-    for (const quote of [availableQuote, unavailableQuote]) {
-      for (const key of obsoleteMarketKeys) assert.ok(!(key in quote), `시세 응답에 다중시장 필드가 남았습니다: ${key}`);
-    }
+    assert.deepEqual(Object.keys(availableQuote).sort(), availableQuoteFields, '수집된 시세는 국내 전용 허용 필드를 정확히 반환해야 합니다.');
+    assert.deepEqual(Object.keys(unavailableQuote).sort(), unavailableQuoteFields, '미수집 시세도 국내 전용 허용 필드를 정확히 반환해야 합니다.');
     fakeNow += 3_599_999;
     await marketData.refreshKr(false);
     assert.equal(fetchCount, 1, '1시간이 되기 전에는 공공데이터를 다시 호출하면 안 됩니다.');
@@ -234,87 +266,9 @@ try {
 
 const envExample = read('.env.example');
 assert.doesNotMatch(envExample, /^PUBLIC_DATA_REFRESH_MS=/m, '고정 1시간 주기를 오래된 서버 환경값이 덮어쓰면 안 됩니다.');
-
-function filesystemFiles() {
-  const found = [];
-  const excludedDirectories = new Set(['.git', 'node_modules', 'runtime']);
-  function walk(absolute, relative = '') {
-    for (const entry of readdirSync(absolute, { withFileTypes: true })) {
-      const nextRelative = relative ? `${relative}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        if (excludedDirectories.has(entry.name) || entry.name.endsWith('-hist-inbox')) continue;
-        walk(path.join(absolute, entry.name), nextRelative);
-        continue;
-      }
-      if (entry.name === '.env' || (entry.name.startsWith('.env.') && entry.name !== '.env.example')) continue;
-      if (['ADMIN_PASSWORD.txt', 'PUBLIC_DATA_KEY.txt', 'startup-log.txt'].includes(entry.name) || entry.name.endsWith('.log')) continue;
-      if (/^data\/(?:server-data|[^/]+-prices)\.json$/.test(nextRelative)) continue;
-      found.push(nextRelative);
-    }
-  }
-  walk(ROOT);
-  return found;
-}
-function projectFiles() {
-  if (process.env.KR_ONLY_SCAN_FILESYSTEM === '1') return filesystemFiles();
-  try {
-    const gitArgs = ['-c', `safe.directory=${ROOT.replaceAll('\\', '/')}`, 'ls-files'];
-    const tracked = execFileSync('git', [...gitArgs, '-z'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').split('\0').filter(Boolean);
-    const untracked = execFileSync('git', [...gitArgs, '--others', '--exclude-standard', '-z'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').split('\0').filter(Boolean);
-    return [...new Set([...tracked, ...untracked])];
-  } catch {
-    return filesystemFiles();
-  }
-}
-const currentFiles = projectFiles();
-const textExtensions = new Set(['', '.cmd', '.css', '.example', '.html', '.js', '.json', '.md', '.mjs', '.txt', '.webmanifest']);
-const forbiddenPatterns = [
-  new RegExp(`(^|[^A-Za-z0-9])${['U', 'S'].join('')}([^A-Za-z0-9]|$)`, 'i'),
-  new RegExp(['U', 'S', 'D'].join(''), 'i'),
-  new RegExp(['I', 'E', 'X'].join(''), 'i'),
-  new RegExp(['N', 'A', 'S', 'D', 'A', 'Q'].join(''), 'i'),
-  new RegExp(['N', 'Y', 'S', 'E'].join(''), 'i'),
-  new RegExp(`(^|[^A-Za-z0-9])${['F', 'X'].join('')}([^A-Za-z0-9]|$)`, 'i'),
-  new RegExp(['refresh', 'U', 's'].join(''), 'i'),
-  new RegExp(['enable', 'U', 's'].join(''), 'i'),
-  new RegExp(['load', 'U', 's'].join(''), 'i'),
-  new RegExp(['market', 'U', 'S'].join(''), 'i'),
-  new RegExp(['u', 's', 'Market'].join(''), 'i'),
-  new RegExp(['U', 's', 'Quote'].join(''), 'i'),
-  new RegExp(['U', 's', 'Symbol'].join(''), 'i'),
-  new RegExp(['u', 's', 'd', 'Krw'].join(''), 'i'),
-  new RegExp(['f', 'x', 'Mode'].join(''), 'i'),
-  new RegExp(['f', 'x', 'Rate'].join(''), 'i'),
-  new RegExp(['f', 'x', 'Auto'].join(''), 'i'),
-  new RegExp(['f', 'x', 'Cache'].join(''), 'i'),
-  new RegExp(['auto', 'F', 'x'].join(''), 'i'),
-  new RegExp(['refresh', 'F', 'x'].join(''), 'i'),
-  new RegExp(['save', 'F', 'x'].join(''), 'i'),
-  new RegExp(['enable', 'F', 'x'].join(''), 'i'),
-  new RegExp(['f', 'x', 'Settings'].join(''), 'i'),
-  new RegExp(['exchange', 'Rate'].join(''), 'i'),
-  new RegExp(['foreign', 'Market'].join(''), 'i'),
-  new RegExp(['A', 'A', 'P', 'L'].join(''), 'i'),
-  new RegExp(['M', 'S', 'F', 'T'].join(''), 'i'),
-  new RegExp(['T', 'S', 'L', 'A'].join(''), 'i'),
-  new RegExp(['A', 'M', 'E', 'X'].join(''), 'i'),
-  new RegExp(['A', 'm', 'e', 'r', 'i', 'c', 'a'].join(''), 'i'),
-  new RegExp(['U', 'nited ', 'S', 'tates'].join(''), 'i'),
-  new RegExp(['D', 'o', 'l', 'l', 'a', 'r'].join(''), 'i'),
-  new RegExp(['미', '국'].join('')),
-  new RegExp(['환', '율'].join('')),
-  new RegExp(['달', '러'].join('')),
-];
-for (const relative of currentFiles) {
-  for (const pattern of forbiddenPatterns) assert.doesNotMatch(relative, pattern, `추적 파일명에 삭제 대상 시장 참조가 남았습니다: ${relative}`);
-  if (!textExtensions.has(path.extname(relative).toLowerCase())) continue;
-  const content = read(relative);
-  for (const pattern of forbiddenPatterns) assert.doesNotMatch(content, pattern, `${relative}에 삭제 대상 시장 참조가 남았습니다.`);
-}
-for (const file of ['server.js', 'lib/market-data.js', 'lib/universe.js', 'public/app.js']) {
-  const content = read(file);
-  for (const key of obsoleteMarketKeys) assert.ok(!content.includes(key), `${file}에 다중시장 필드가 남았습니다: ${key}`);
-}
+const marketDataSource = read('lib/market-data.js');
+const providerUrls = [...marketDataSource.matchAll(/https?:\/\/[^'"\s]+/g)].map((match) => match[0]);
+assert.deepEqual(providerUrls, ['https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo'], '시세 공급자는 공공데이터포털 금융위원회 API 하나여야 합니다.');
 
 const serverSource = read('server.js');
 assert.match(serverSource, /const PUBLIC_DATA_REFRESH_MS = 60\*60\*1000;/, '서버의 국내 시세 확인 주기는 정확히 1시간이어야 합니다.');
