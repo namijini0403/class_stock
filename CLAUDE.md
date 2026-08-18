@@ -2,7 +2,7 @@
 
 > **이 파일은 meta_harness 스타터킷을 프로젝트에 맞게 채운 버전이다.** 플레이스홀더 없이 전부 채워져 있어야 한다 (Task 1 설치 완료 상태).
 
-우리학교 모의투자 — 초등 교실용 한국/미국 주식 모의투자 PWA. 스택: 순수 Node.js 서버(프레임워크 없음, 의존성은 pg 하나) + 순수 JS/HTML/CSS PWA 프론트엔드 + Postgres.
+우리학교 모의투자 — 초등 교실용 국내 주식 모의투자 PWA. 스택: 순수 Node.js 서버(프레임워크 없음, 의존성은 pg 하나) + 순수 JS/HTML/CSS PWA 프론트엔드 + Postgres.
 
 장애·침해 의심 시 필독: `docs/security/INCIDENT_RESPONSE_RUNBOOK.md`
 
@@ -32,6 +32,7 @@
 
 ```
 node scripts/syntax-check.mjs
+node scripts/check-kr-only.mjs
 node scripts/check-placeholders.mjs
 node scripts/smoke-auth.mjs        (Task 2 이후 존재; DB 불필요)
 node scripts/smoke-server.mjs      (Task 5 이후 존재; DATABASE_URL 필요 — 없으면 skip 출력)
@@ -44,6 +45,7 @@ node scripts/smoke-server.mjs      (Task 5 이후 존재; DATABASE_URL 필요 �
 > 정본 = `docs/decisions-log.md` (템플릿: docs/decisions-log-template.md). 아래는 최상위 요약.
 
 - 학생 상태는 서버측 Postgres JSONB가 정본 (2026-08).
+- 거래 시장은 국내 주식 전용이며 공공데이터를 1시간마다 확인 (2026-08).
 - 의존성은 pg 하나만 (2026-08).
 - JWT_SECRET 운영 중 회전 금지 — 전 사용자 로그아웃됨 (2026-08).
 
@@ -57,7 +59,7 @@ node scripts/smoke-server.mjs      (Task 5 이후 존재; DATABASE_URL 필요 �
 - 환경: Windows + PowerShell. 커밋 메시지에 큰따옴표 금지(인자 깨짐) — 단따옴표 here-string `@'...'@` 사용, 닫는 `'@`는 0열.
 - 커밋 메시지 한국어 또는 영어, 말미에 공동저자 트레일러 `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - `git add -A` 금지 — 명시 경로만 add.
-- 커밋 금지 대상: `.env`, `ADMIN_PASSWORD.txt`, `PUBLIC_DATA_KEY.txt`, `data/server-data.json`.
+- 커밋 금지 대상: `.env*`(`.env.example` 제외), `ADMIN_PASSWORD.txt`, `PUBLIC_DATA_KEY.txt`, 학생 데이터, 시세 캐시, `runtime/`, `node_modules/`, 로그.
 - 사용자가 직접 할 일이 생기면 코드가 아니라 `docs/USER-TODO.md`에 추가.
 - 합리화 방지표(`docs/rationalization-guardrails.md`)에 실패를 기록하는 것이 하네스 유지보수의 전부다.
 

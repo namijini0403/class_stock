@@ -1,7 +1,7 @@
 {
   "name": "우리학교 모의투자",
   "short_name": "모의투자",
-  "description": "초등학교 고학년용 한국·미국 실제 주식 시세 기반 모의투자",
+  "description": "초등학교 고학년용 국내 공공데이터 기반 모의투자",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

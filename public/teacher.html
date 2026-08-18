@@ -77,36 +77,25 @@
     </article>
 
     <article id="adminMarketData" class="card teacher-admin-card hidden">
-      <div class="section-head"><div><h2>시세 데이터 상태</h2><p>국내 공공데이터와 미국 IEX HIST의 마지막 기준일을 확인합니다.</p></div></div>
+      <div class="section-head"><div><h2>시세 데이터 상태</h2><p>국내 공공데이터의 마지막 기준일과 1시간 확인 주기를 확인합니다.</p></div></div>
       <div id="marketDataStatus" class="market-note">시세 상태를 불러오는 중입니다.</div>
       <div class="teacher-controls" style="margin-top:12px">
         <button id="refreshKrMarketBtn" class="btn btn-primary btn-small">국내 공공데이터 새로 확인</button>
-        <button id="reloadUsMarketBtn" class="btn btn-secondary btn-small">IEX 변환파일 다시 읽기</button>
       </div>
-      <p class="muted">미국 IEX HIST 원본은 대용량 PCAP이므로 관리자 PC에서 변환한 캐시를 사용합니다. 데이터가 없으면 미국주식 거래는 자동으로 차단됩니다.</p>
+      <p class="muted">공공데이터는 장중 실시간 가격이 아닌 공식 일별 자료입니다. 서버가 매시간 새 자료를 확인하며, 필요하면 위 버튼으로 즉시 확인할 수 있습니다.</p>
     </article>
 
     <article id="adminMarketSettings" class="card teacher-admin-card hidden">
-      <div class="section-head"><div><h2>시장 설정</h2><p>수업용 거래 수수료와 미국주식 원화 환산에 사용할 환율을 조절합니다.</p></div></div>
+      <div class="section-head"><div><h2>시장 설정</h2><p>수업용 거래 수수료를 조절합니다.</p></div></div>
       <div class="teacher-controls"><label>거래 수수료율 (%)<input id="feeRatePct" type="number" min="0" max="1" step="0.001" placeholder="0.1" /></label><button id="saveFeeBtn" class="btn btn-primary btn-small">수수료 저장</button><span id="feeCurrent" class="muted"></span></div>
-      <div class="teacher-controls" style="margin-top:12px">
-        <label>환율 적용 방식
-          <select id="fxMode"><option value="AUTO">자동 환율</option><option value="MANUAL">관리자 수동 환율</option></select>
-        </label>
-        <label>수동 환율 (1 USD = 원)<input id="usdKrwRate" type="number" min="500" max="3000" step="0.01" placeholder="1400" /></label>
-        <button id="saveFxBtn" class="btn btn-primary btn-small">환율 설정 저장</button>
-        <button id="refreshFxBtn" class="btn btn-secondary btn-small">자동 환율 새로고침</button>
-      </div>
-      <p id="fxCurrent" class="muted"></p>
-      <p class="muted">기본은 자동 환율입니다. 필요할 때만 수동 환율로 바꿀 수 있습니다. 미국주식은 달러 시세를 적용 환율로 원화 환산하며 실제 환전 주문은 발생하지 않습니다.</p>
     </article>
 
     <article id="adminCorporate" class="card teacher-admin-card hidden">
       <div class="section-head"><div><h2>기업행동 관리</h2><p>거래정지·회사명 변경 등 자동 감지 결과를 확인하고, 합병·코드 변경처럼 공식 비율이 필요한 사건은 직접 등록합니다.</p></div><button id="refreshActionsBtn" class="btn btn-secondary btn-small">새로고침</button></div>
       <div class="corporate-grid">
         <label>유형<select id="caType"><option value="SPLIT">주식분할</option><option value="REVERSE_SPLIT">주식병합</option><option value="CODE_CHANGE">종목코드 변경</option><option value="MERGER">기업 합병</option><option value="RENAME">회사명 변경</option><option value="HALT">거래정지</option><option value="RESUME">거래재개</option><option value="DELIST">상장폐지</option></select></label>
-        <label>기존 종목코드<input id="caOldCode" maxlength="50" placeholder="005930 또는 AAPL" /></label>
-        <label>새 종목코드<input id="caNewCode" maxlength="50" placeholder="예: MSFT / 필요할 때만" /></label>
+        <label>기존 종목코드<input id="caOldCode" maxlength="6" inputmode="numeric" placeholder="예: 005930" /></label>
+        <label>새 종목코드<input id="caNewCode" maxlength="6" inputmode="numeric" placeholder="예: 000660 / 필요할 때만" /></label>
         <label>적용일<input id="caDate" type="date" /></label>
         <label>새 주식 수(분자)<input id="caRatioNum" type="number" min="0.000001" step="0.000001" value="1" /></label>
         <label>기존 주식 수(분모)<input id="caRatioDen" type="number" min="0.000001" step="0.000001" value="1" /></label>
@@ -115,7 +104,7 @@
         <label class="wide">설명<input id="caNote" maxlength="200" placeholder="예: 1주를 5주로 액면분할 / 공식 공시의 합병 교환비율 확인" /></label>
         <div><button id="createActionBtn" class="btn btn-primary">기업행동 등록</button></div>
       </div>
-      <p class="muted">비율은 ‘기존 1주당 새 주식 몇 주인가’를 분수로 입력합니다. 1주→5주는 5/1, 5주→1주는 1/5입니다. 미국주식은 AAPL처럼 티커를 입력할 수 있습니다.</p>
+      <p class="muted">비율은 ‘기존 1주당 새 주식 몇 주인가’를 분수로 입력합니다. 1주→5주는 5/1, 5주→1주는 1/5입니다. 종목코드는 국내 6자리 코드를 입력합니다.</p>
       <div id="actionList"></div>
     </article>
 

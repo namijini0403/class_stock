@@ -6,8 +6,8 @@ import { spawnSync } from 'node:child_process';
 const result = spawnSync('git', ['diff', '--cached', '--name-only'], { encoding: 'utf8' });
 const staged = (result.stdout || '').split('\n').filter(Boolean);
 
-const FORBIDDEN = /(^|\/)\.env$|ADMIN_PASSWORD\.txt|PUBLIC_DATA_KEY\.txt|data\/server-data\.json/;
-const hits = staged.filter((p) => FORBIDDEN.test(p));
+const FORBIDDEN = /ADMIN_PASSWORD\.txt|PUBLIC_DATA_KEY\.txt|data\/(?:server-data|kr-public-prices|iex-us-prices)\.json|(^|\/)iex-hist-inbox\/|(^|\/)runtime\/|(^|\/)node_modules\/|startup-log\.txt|\.log$/;
+const hits = staged.filter((p) => FORBIDDEN.test(p) || (/(^|\/)\.env(?:\.|$)/.test(p) && p !== '.env.example'));
 
 if (hits.length) {
   console.error(`금지 파일이 스테이징되어 있습니다: ${hits.join(', ')}`);

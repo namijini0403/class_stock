@@ -3,7 +3,9 @@
     "allow": [
       "Bash(node --check:*)",
       "Bash(node scripts/syntax-check.mjs)",
+      "Bash(node scripts/check-kr-only.mjs)",
       "Bash(node scripts/check-placeholders.mjs)",
+      "Bash(npm run check)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)"

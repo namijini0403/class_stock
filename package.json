@@ -5,7 +5,9 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "start": "node server.js",
-    "check": "node scripts/syntax-check.mjs"
+    "check": "node scripts/syntax-check.mjs && node scripts/check-kr-only.mjs && node scripts/check-placeholders.mjs && node scripts/smoke-auth.mjs",
+    "check:kr-only": "node scripts/check-kr-only.mjs",
+    "check:server": "node scripts/smoke-server.mjs"
   },
   "dependencies": { "pg": "^8.13.0" }
 }

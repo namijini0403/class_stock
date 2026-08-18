@@ -108,21 +108,17 @@
         <div class="search-panel">
           <div class="search-box">
             <span class="search-icon" aria-hidden="true"></span>
-            <input id="search" class="search-input" placeholder="회사명 · 종목코드 · 미국 티커 검색" autocomplete="off" />
+            <input id="search" class="search-input" placeholder="회사명 · 국내 6자리 종목코드 검색" autocomplete="off" />
           </div>
           <select id="marketFilter" class="market-select" aria-label="시장 선택">
             <option value="">전체 시장</option>
             <option value="KR">한국 전체</option>
-            <option value="US">미국 전체</option>
             <option value="KOSPI">코스피</option>
             <option value="KOSDAQ">코스닥</option>
-            <option value="NASDAQ">나스닥</option>
-            <option value="NYSE">뉴욕증권거래소</option>
-            <option value="AMEX">아멕스</option>
           </select>
         </div>
 
-        <div class="market-note">국내는 금융위원회 공공데이터의 전 영업일 시세, 미국은 IEX Exchange HIST 참고가격을 사용합니다. 각 종목에 출처와 기준일을 표시합니다.</div>
+        <div class="market-note">금융위원회 공공데이터의 공식 일별 시세를 사용합니다. 서버가 1시간마다 새 자료를 확인하며, 화면에 기준일을 표시합니다.</div>
         <div id="stockGrid" class="stock-list"></div>
         <div id="searchMore" class="search-more hidden"><button id="moreBtn" class="btn btn-secondary">검색 결과 더 보기</button></div>
       </section>
@@ -153,7 +149,7 @@
       </section>
 
       <section id="tab-settings" class="tabpage hidden">
-        <div class="page-heading"><h1>MY</h1><p>학급 정보를 확인하고 로그아웃할 수 있습니다. 미국주식은 자동 USD/KRW 환율을 기본으로 원화 자산에 합산되며, 학교 관리자가 원하면 수동 환율로 전환할 수 있습니다.</p></div>
+        <div class="page-heading"><h1>MY</h1><p>학급 정보를 확인하고 로그아웃할 수 있습니다. 학생 투자 내역은 학교 서버의 계정에 안전하게 저장됩니다.</p></div>
 
         <article class="settings-section">
           <h2>학급 정보</h2>
@@ -167,8 +163,8 @@
 
         <article class="settings-section">
           <h2>시세 출처</h2>
-          <p>국내: 금융위원회 주식시세정보 공공데이터 · 미국: IEX Exchange HIST. 화면의 기준일을 확인한 뒤 거래합니다.</p>
-          <p class="muted">미국 시세 출처표시: Data provided for free by IEX · <a href="https://www.iex.io/legal/hist-data-terms" target="_blank" rel="noopener noreferrer">IEX Historical Data Terms</a></p>
+          <p>금융위원회 주식시세정보 공공데이터를 사용합니다. 화면의 기준일을 확인한 뒤 거래합니다.</p>
+          <p class="muted">공공데이터는 장중 실시간 시세가 아니라 공식 일별 자료이며, 서버가 1시간마다 새 자료를 확인합니다.</p>
         </article>
 
         <article class="settings-section">

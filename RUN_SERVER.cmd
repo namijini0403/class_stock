@@ -1,20 +1,20 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title Class Stock Simulator v2.9.2
+title Class Stock Simulator v3.0
 
 set "LOG=%~dp0startup-log.txt"
 set "NODE=%~dp0runtime\node.exe"
 set "NODE_URL=https://nodejs.org/download/release/v24.19.0/win-x64/node.exe"
 set "NODE_SHA256=3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237"
 
->"%LOG%" echo ==== Class Stock Simulator v2.9.2 startup log ====
+>"%LOG%" echo ==== Class Stock Simulator v3.0 startup log ====
 >>"%LOG%" echo Date: %date% %time%
 >>"%LOG%" echo Folder: %CD%
 
 cls
 echo ======================================================
-echo   Class Stock Simulator v2.9.2 - NO INSTALL LAUNCHER
+echo   Class Stock Simulator v3.0 - LOCAL SERVER LAUNCHER
 echo ======================================================
 echo.
 echo This window will stay open even if startup fails.
@@ -25,6 +25,14 @@ if not exist "%~dp0server.js" (
   echo [ERROR] server.js not found.
   echo Please extract the ZIP completely before running.
   >>"%LOG%" echo ERROR: server.js not found
+  goto :END
+)
+
+if not exist "%~dp0node_modules\pg\package.json" (
+  echo [ERROR] Server dependencies are not installed.
+  echo Run npm install in this folder before START_HERE.cmd.
+  echo Postgres and DATABASE_URL are also required.
+  >>"%LOG%" echo ERROR: node_modules\pg missing. Run npm install first.
   goto :END
 )
 
