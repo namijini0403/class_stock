@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
-title Class Stock Simulator v3.0
+title Class Stock Simulator v3.0.1
 
 if not exist "PUBLIC_DATA_KEY.txt" (
   echo.

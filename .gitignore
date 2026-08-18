@@ -7,9 +7,8 @@ PUBLIC_DATA_KEY.txt
 
 # Student/class data and runtime-generated caches
 data/server-data.json
-data/kr-public-prices.json
-data/iex-us-prices.json
-iex-hist-inbox/
+data/*-prices.json
+*-hist-inbox/
 
 # Bundled/runtime artifacts and logs
 runtime/
