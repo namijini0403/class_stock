@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 const result = spawnSync('git', ['diff', '--cached', '--name-only'], { encoding: 'utf8' });
 const staged = (result.stdout || '').split('\n').filter(Boolean);
 
-const FORBIDDEN = /ADMIN_PASSWORD\.txt|PUBLIC_DATA_KEY\.txt|data\/(?:server-data|kr-public-prices)\.json|(^|\/)runtime\/|(^|\/)node_modules\/|startup-log\.txt|\.log$/;
+const FORBIDDEN = /ADMIN_PASSWORD\.txt|PUBLIC_DATA_KEY\.txt|data\/(?:server-data\.json|kr-public-prices\.json(?:\..*)?)$|(^|\/)runtime\/|(^|\/)node_modules\/|startup-log\.txt|\.log$/;
 const hits = staged.filter((p) => FORBIDDEN.test(p) || (/(^|\/)\.env(?:\.|$)/.test(p) && p !== '.env.example'));
 
 if (hits.length) {

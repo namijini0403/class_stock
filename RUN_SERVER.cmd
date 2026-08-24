@@ -1,20 +1,20 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title Class Stock Simulator v3.0.2
+title Class Stock Simulator v3.1.0
 
 set "LOG=%~dp0startup-log.txt"
 set "NODE=%~dp0runtime\node.exe"
 set "NODE_URL=https://nodejs.org/download/release/v24.19.0/win-x64/node.exe"
 set "NODE_SHA256=3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237"
 
->"%LOG%" echo ==== Class Stock Simulator v3.0.2 startup log ====
+>"%LOG%" echo ==== Class Stock Simulator v3.1.0 startup log ====
 >>"%LOG%" echo Date: %date% %time%
 >>"%LOG%" echo Folder: %CD%
 
 cls
 echo ======================================================
-echo   Class Stock Simulator v3.0.2 - LOCAL SERVER LAUNCHER
+echo   Class Stock Simulator v3.1.0 - LOCAL SERVER LAUNCHER
 echo ======================================================
 echo.
 echo This window will stay open even if startup fails.

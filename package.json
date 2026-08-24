@@ -1,11 +1,11 @@
 {
   "name": "class-stock",
-  "version": "3.0.2",
+  "version": "3.1.0",
   "private": true,
   "engines": { "node": ">=22" },
   "scripts": {
     "start": "node server.js",
-    "check": "node scripts/syntax-check.mjs && node scripts/check-kr-only.mjs && node scripts/check-placeholders.mjs && node scripts/smoke-auth.mjs",
+    "check": "node scripts/syntax-check.mjs && node scripts/check-kr-only.mjs && node scripts/check-daily-chart.mjs && node scripts/check-placeholders.mjs && node scripts/smoke-auth.mjs",
     "check:kr-only": "node scripts/check-kr-only.mjs",
     "check:server": "node scripts/smoke-server.mjs"
   },

@@ -109,6 +109,14 @@ async function main() {
     const initialCash = Number(joinBody.state?.cash);
     if (!Number.isFinite(initialCash)) throw new Error('가입 응답에 state.cash가 없음: ' + JSON.stringify(joinBody));
 
+    // 일봉 차트는 학생 로그인과 국내 코드·기간 검증을 통과해야만 공급자를 호출한다.
+    const chartNoAuth = await fetch(`${baseUrl}/api/chart?code=005930&days=190`);
+    if (chartNoAuth.status !== 401) throw new Error(`미인증 일봉 요청이 거부되지 않음 (status ${chartNoAuth.status})`);
+    const chartBadCode = await fetch(`${baseUrl}/api/chart?code=ABC123&days=190`, { headers: { Authorization: `Bearer ${studentToken}` } });
+    if (chartBadCode.status !== 400) throw new Error(`비국내 일봉 코드가 거부되지 않음 (status ${chartBadCode.status})`);
+    const chartBadDays = await fetch(`${baseUrl}/api/chart?code=005930&days=0`, { headers: { Authorization: `Bearer ${studentToken}` } });
+    if (chartBadDays.status !== 400) throw new Error(`잘못된 일봉 기간이 거부되지 않음 (status ${chartBadDays.status})`);
+
     // 4) GET /api/me (가입 직후)
     const meRes1 = await fetch(`${baseUrl}/api/me`, { headers: { Authorization: `Bearer ${studentToken}` } });
     const meBody1 = await meRes1.json();

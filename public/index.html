@@ -118,7 +118,7 @@
           </select>
         </div>
 
-        <div class="market-note">금융위원회 공공데이터의 공식 일별 시세를 사용합니다. 서버가 1시간마다 새 자료를 확인하며, 화면에 기준일을 표시합니다.</div>
+        <div class="market-note">금융위원회 공공데이터의 공식 일별 시세를 사용합니다. 서버가 하루 1회 새 자료를 확인하며, 화면에 기준일을 표시합니다.</div>
         <div id="stockGrid" class="stock-list"></div>
         <div id="searchMore" class="search-more hidden"><button id="moreBtn" class="btn btn-secondary">검색 결과 더 보기</button></div>
       </section>
@@ -164,7 +164,7 @@
         <article class="settings-section">
           <h2>시세 출처</h2>
           <p>금융위원회 주식시세정보 공공데이터를 사용합니다. 화면의 기준일을 확인한 뒤 거래합니다.</p>
-          <p class="muted">공공데이터는 장중 실시간 시세가 아니라 공식 일별 자료이며, 서버가 1시간마다 새 자료를 확인합니다.</p>
+          <p class="muted">공공데이터는 장중 실시간 시세가 아니라 공식 일별 자료이며, 서버가 하루 1회 새 자료를 확인합니다.</p>
         </article>
 
         <article class="settings-section">
@@ -184,7 +184,7 @@
     </section>
   </main>
 
-  <dialog id="tradeDialog" class="stock-dialog">
+  <dialog id="tradeDialog" class="stock-dialog" aria-labelledby="tradeName">
     <div class="stock-detail">
       <div class="stock-detail-top">
         <button class="dialog-close stock-close" id="tradeClose" aria-label="닫기">×</button>
@@ -198,6 +198,28 @@
           <span id="tradeChange" class="flat">-</span><small id="tradeSource" class="quote-source"></small>
         </div>
       </div>
+
+      <section class="daily-chart-panel" aria-labelledby="dailyChartHeading">
+        <div class="daily-chart-head">
+          <div>
+            <h3 id="dailyChartHeading">일봉 차트</h3>
+            <p>공공데이터 일봉 · 하루 1회 · 다음 영업일 오후 반영</p>
+          </div>
+          <div class="daily-chart-ranges" role="group" aria-label="일봉 차트 기간">
+            <button type="button" class="daily-chart-range active" data-chart-days="30" aria-pressed="true">30일</button>
+            <button type="button" class="daily-chart-range" data-chart-days="90" aria-pressed="false">90일</button>
+            <button type="button" class="daily-chart-range" data-chart-days="180" aria-pressed="false">180일</button>
+          </div>
+        </div>
+        <div id="dailyChartState" class="daily-chart-state" role="status" aria-live="polite">종목을 열면 일봉 차트를 불러옵니다.</div>
+        <figure id="dailyChartFigure" class="daily-chart-figure hidden">
+          <svg id="dailyChartSvg" viewBox="0 0 640 340" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="dailyChartSvgTitle dailyChartSvgDesc"></svg>
+          <div class="daily-chart-legend" aria-hidden="true"><span><i class="legend-up"></i>상승</span><span><i class="legend-down"></i>하락</span><span><i class="legend-volume"></i>거래량</span></div>
+          <figcaption id="dailyChartSummary" class="daily-chart-summary"></figcaption>
+        </figure>
+        <p id="dailyChartMeta" class="daily-chart-meta"></p>
+        <p class="daily-chart-delay">실시간·시간봉 차트가 아닙니다. 하루 단위 공식 시가·고가·저가·종가와 거래량이며, 거래일 자료는 다음 영업일 오후에 반영될 수 있습니다.</p>
+      </section>
 
       <div id="tradeStatus" class="trade-status hidden"></div>
 
@@ -232,6 +254,7 @@
     </div>
   </dialog>
 
+  <script src="/daily-chart.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

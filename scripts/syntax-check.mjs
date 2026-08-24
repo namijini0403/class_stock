@@ -12,12 +12,14 @@ const libFiles = existsSync('lib')
   ? readdirSync('lib').filter((f) => f.endsWith('.js')).map((f) => `lib/${f}`)
   : [];
 
+const publicFiles = existsSync('public')
+  ? readdirSync('public').filter((f) => f.endsWith('.js')).map((f) => `public/${f}`)
+  : [];
+
 const targets = [
   'server.js',
   ...libFiles,
-  'public/app.js',
-  'public/teacher.js',
-  'public/service-worker.js',
+  ...publicFiles,
 ].filter((f) => existsSync(f));
 
 const failures = [];
