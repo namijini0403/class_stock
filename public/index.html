@@ -206,19 +206,24 @@
             <p>공공데이터 일봉 · 하루 1회 · 다음 영업일 오후 반영</p>
           </div>
           <div class="daily-chart-ranges" role="group" aria-label="일봉 차트 기간">
-            <button type="button" class="daily-chart-range active" data-chart-days="30" aria-pressed="true">30일</button>
-            <button type="button" class="daily-chart-range" data-chart-days="90" aria-pressed="false">90일</button>
-            <button type="button" class="daily-chart-range" data-chart-days="180" aria-pressed="false">180일</button>
+            <button type="button" class="daily-chart-range active" data-chart-period="1m" aria-controls="dailyChartFigure" aria-pressed="true">1개월</button>
+            <button type="button" class="daily-chart-range" data-chart-period="3m" aria-controls="dailyChartFigure" aria-pressed="false">3개월</button>
+            <button type="button" class="daily-chart-range" data-chart-period="6m" aria-controls="dailyChartFigure" aria-pressed="false">6개월</button>
+            <button type="button" class="daily-chart-range" data-chart-period="1y" aria-controls="dailyChartFigure" aria-pressed="false">1년</button>
+            <button type="button" class="daily-chart-range" data-chart-period="3y" aria-controls="dailyChartFigure" aria-pressed="false">3년</button>
+            <button type="button" class="daily-chart-range" data-chart-period="5y" aria-controls="dailyChartFigure" aria-pressed="false">5년</button>
+            <button type="button" class="daily-chart-range" data-chart-period="10y" aria-controls="dailyChartFigure" aria-pressed="false">10년</button>
           </div>
         </div>
         <div id="dailyChartState" class="daily-chart-state" role="status" aria-live="polite">종목을 열면 일봉 차트를 불러옵니다.</div>
         <figure id="dailyChartFigure" class="daily-chart-figure hidden">
           <svg id="dailyChartSvg" viewBox="0 0 640 340" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="dailyChartSvgTitle dailyChartSvgDesc"></svg>
           <div class="daily-chart-legend" aria-hidden="true"><span><i class="legend-up"></i>상승</span><span><i class="legend-down"></i>하락</span><span><i class="legend-volume"></i>거래량</span></div>
+          <div id="dailyChartAggregation" class="daily-chart-aggregation"></div>
           <figcaption id="dailyChartSummary" class="daily-chart-summary"></figcaption>
         </figure>
         <p id="dailyChartMeta" class="daily-chart-meta"></p>
-        <p class="daily-chart-delay">실시간·시간봉 차트가 아닙니다. 하루 단위 공식 시가·고가·저가·종가와 거래량이며, 거래일 자료는 다음 영업일 오후에 반영될 수 있습니다.</p>
+        <p class="daily-chart-delay">실시간·시간봉 차트가 아닙니다. 공공데이터의 원시 일별 가격이며 수정주가·투자수익률이 아닙니다. 휴장일에는 봉이 없고, 긴 기간은 화면 폭에 맞춰 여러 거래일을 한 구간으로 묶어 표시합니다. 거래일 자료는 다음 영업일 오후에 반영될 수 있습니다.</p>
       </section>
 
       <div id="tradeStatus" class="trade-status hidden"></div>

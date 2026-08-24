@@ -106,7 +106,8 @@ assert.deepEqual(domesticCorporateActions([
 
 const {
   MarketDataService, DAY_MS, MARKET_RETRY_MS, HISTORY_RETRY_MS,
-  HISTORY_MAX_CONCURRENCY, HISTORY_QUEUE_LIMIT, HISTORY_DAILY_BUDGET, HISTORY_CACHE_LIMIT,
+  HISTORY_PERIODS, DEFAULT_HISTORY_PERIOD, HISTORY_ROWS_PER_PAGE, HISTORY_MAX_CALENDAR_ROWS, HISTORY_MAX_PAGES, HISTORY_HEAD_OVERLAP_DAYS,
+  HISTORY_MAX_CONCURRENCY, HISTORY_QUEUE_LIMIT, HISTORY_DAILY_BUDGET, HISTORY_CACHE_LIMIT, HISTORY_CACHE_BAR_LIMIT, historyRange,
 } = require(path.join(ROOT, 'lib/market-data.js'));
 const { msUntilNextKstRefresh, shouldForceInitialKstRefresh } = require(path.join(ROOT, 'lib/daily-refresh.js'));
 assert.equal(MARKET_RETRY_MS, 30 * 60 * 1000, '시세 공급자 오류 재시도는 30분 간격이어야 합니다.');
@@ -114,7 +115,18 @@ assert.equal(HISTORY_RETRY_MS, MARKET_RETRY_MS, '일봉 오류 재시도도 같�
 assert.equal(HISTORY_MAX_CONCURRENCY, 2, '일봉 공급자 동시 호출 상한은 2여야 합니다.');
 assert.equal(HISTORY_QUEUE_LIMIT, 20, '일봉 공급자 대기열은 제한된 요청 수만 받아야 합니다.');
 assert.equal(HISTORY_DAILY_BUDGET, 4000, '일봉 호출은 공공데이터 일일 한도보다 낮은 내부 예산으로 보호해야 합니다.');
-assert.equal(HISTORY_CACHE_LIMIT, 512, '일봉 메모리 캐시는 제한된 종목 수만 보관해야 합니다.');
+assert.deepEqual(HISTORY_PERIODS, { '1m':1, '3m':3, '6m':6, '1y':12, '3y':36, '5y':60, '10y':120 }, '일봉 기간 화이트리스트를 임의로 넓히면 안 됩니다.');
+assert.equal(DEFAULT_HISTORY_PERIOD, '1m', '기본 일봉 기간은 1개월이어야 합니다.');
+assert.equal(HISTORY_ROWS_PER_PAGE, 500);
+assert.equal(HISTORY_MAX_CALENDAR_ROWS, 3654);
+assert.equal(HISTORY_MAX_PAGES, 8);
+assert.equal(HISTORY_HEAD_OVERLAP_DAYS, 20);
+assert.equal(HISTORY_CACHE_LIMIT, 64, '일봉 메모리 캐시는 최대 64종목만 보관해야 합니다.');
+assert.equal(HISTORY_CACHE_BAR_LIMIT, 100000, '일봉 메모리 캐시는 총 봉 수도 제한해야 합니다.');
+assert.deepEqual(historyRange('1m',Date.parse('2026-03-31T03:00:00.000Z')), {period:'1m',months:1,beginBasDt:'20260228',endBasDt:'20260401',requestedRangeStart:'2026-02-28',rangeEnd:'2026-03-31',calendarRows:32}, '월말은 이전 달 마지막 날로 clamp해야 합니다.');
+assert.equal(historyRange('1y',Date.parse('2028-02-29T03:00:00.000Z')).beginBasDt, '20270228', '윤일에서 1년 전은 2월 말일이어야 합니다.');
+assert.equal(historyRange('10y',Date.parse('2021-03-01T03:00:00.000Z')).calendarRows, 3654, '10년 범위의 윤일 포함 절대 상한을 허용해야 합니다.');
+assert.throws(() => historyRange('11y'), /지원하지 않는/, '화이트리스트 밖 기간은 거부해야 합니다.');
 const schedulerNow = Date.parse('2026-08-24T05:30:00.000Z'); // 한국시간 14:30
 const schedulerPreviousSuccess = Date.parse('2026-08-23T06:00:00.000Z'); // 전날 한국시간 15:00
 assert.equal(msUntilNextKstRefresh(Date.parse('2026-08-24T04:59:00.000Z'), 14, 10), 11 * 60 * 1000, '14:10 전에는 당일 공개 확인 시각까지 기다려야 합니다.');
@@ -341,112 +353,280 @@ try {
 
 const chartTempDir = mkdtempSync(path.join(tmpdir(), 'class-stock-chart-check-'));
 const chartRealFetch = globalThis.fetch;
+const realDateNow = Date.now;
 try {
   const chartUniverse = new StockUniverse(path.join(chartTempDir, 'universe.json'), [
     { code: '005930', name: '삼성전자', market: 'KOSPI' },
   ]);
-  const chartService = new MarketDataService({ dataDir: chartTempDir, universe: chartUniverse, serviceKey: 'TEST_KEY' });
-  const requestedUrls = [];
+  const fixedNow = Date.parse('2026-08-24T03:00:00.000Z');
+  Date.now = () => fixedNow;
+
   const compactDay = (compact, offset) => {
     const date = new Date(Date.UTC(Number(compact.slice(0, 4)), Number(compact.slice(4, 6)) - 1, Number(compact.slice(6, 8)) + offset));
-    return `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, '0')}${String(date.getUTCDate()).padStart(2, '0')}`;
+    return String(date.getUTCFullYear()) + String(date.getUTCMonth() + 1).padStart(2, '0') + String(date.getUTCDate()).padStart(2, '0');
   };
-  let historyFetchCount = 0;
-  globalThis.fetch = async (input) => {
-    historyFetchCount++;
-    const requestUrl = new URL(String(input));
-    requestedUrls.push(requestUrl);
-    await new Promise((resolve) => setImmediate(resolve));
-    const end = requestUrl.searchParams.get('endBasDt');
-    const first = compactDay(end, -3), middle = compactDay(end, -2), last = compactDay(end, -1);
-    const historyRows = [
-      { srtnCd: '005930', itmsNm: '삼성전자', mrktCtg: 'KOSPI', basDt: last, mkp: '120', hipr: '135', lopr: '115', clpr: '130', trqu: '30' },
-      { srtnCd: '005930', itmsNm: '삼성전자', mrktCtg: 'KOSPI', basDt: first, mkp: '100', hipr: '110', lopr: '95', clpr: '105', trqu: '10', vs: '5', fltRt: '5' },
-      { srtnCd: '005930', itmsNm: '삼성전자', mrktCtg: 'KOSPI', basDt: middle, mkp: '105', hipr: '125', lopr: '100', clpr: '115', trqu: '20', vs: '10', fltRt: '9.52' },
-      { srtnCd: '000660', itmsNm: '다른 종목', mrktCtg: 'KOSPI', basDt: middle, mkp: '1', hipr: '2', lopr: '1', clpr: '2', trqu: '1' },
-      { srtnCd: '005930', itmsNm: '잘못된 시장', mrktCtg: 'NYSE', basDt: middle, mkp: '1', hipr: '2', lopr: '1', clpr: '2', trqu: '1' },
-      { srtnCd: '005930', itmsNm: '잘못된 날짜', mrktCtg: 'KOSPI', basDt: '20260230', mkp: '1', hipr: '2', lopr: '1', clpr: '2', trqu: '1' },
-      { srtnCd: '005930', itmsNm: '잘못된 OHLC', mrktCtg: 'KOSPI', basDt: middle, mkp: '120', hipr: '110', lopr: '100', clpr: '115', trqu: '1' },
-      { srtnCd: '005930', itmsNm: '삼성전자', mrktCtg: 'KOSPI', basDt: middle, mkp: '105', hipr: '130', lopr: '100', clpr: '120', trqu: '25' },
-    ];
-    return {
-      ok: true,
-      json: async () => ({ response: { header: { resultCode: '00' }, body: { totalCount: historyRows.length, items: { item: historyRows } } } }),
+  const historyRow = (code, compact, index = 0) => ({
+    srtnCd: code,
+    itmsNm: '테스트종목',
+    mrktCtg: 'KOSPI',
+    basDt: compact,
+    mkp: String(1000 + index),
+    hipr: String(1010 + index),
+    lopr: String(990 + index),
+    clpr: String(1005 + index),
+    trqu: String(100 + index),
+  });
+  const pagedMock = (total, mutate = null) => {
+    const calls = [];
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input)), page = Number(url.searchParams.get('pageNo'));
+      calls.push({ page, url });
+      const begin = url.searchParams.get('beginBasDt');
+      const offset = (page - 1) * HISTORY_ROWS_PER_PAGE;
+      const count = Math.min(HISTORY_ROWS_PER_PAGE, Math.max(0, total - offset));
+      let spec = {
+        ok: true,
+        status: 200,
+        total,
+        header: { resultCode: '00' },
+        items: Array.from({ length: count }, (_, local) => historyRow('005930', compactDay(begin, offset + local), offset + local)),
+      };
+      if (mutate) spec = { ...spec, ...(mutate({ ...spec, page, begin, offset, url }) || {}) };
+      return {
+        ok: spec.ok,
+        status: spec.status,
+        json: async () => ({
+          response: {
+            header: spec.header,
+            body: { totalCount: spec.total, pageNo: page, numOfRows: HISTORY_ROWS_PER_PAGE, items: { item: spec.items } },
+          },
+        }),
+      };
     };
+    return calls;
   };
 
-  const [firstChart, concurrentChart] = await Promise.all([
-    chartService.dailyChart(chartUniverse.lookup('005930'), { days: 190 }),
-    chartService.dailyChart(chartUniverse.lookup('005930'), { days: 190 }),
-  ]);
-  assert.equal(historyFetchCount, 1, '같은 종목의 동시 일봉 요청은 외부 호출 하나로 합쳐야 합니다.');
-  assert.equal(requestedUrls[0].searchParams.get('likeSrtnCd'), '005930', '공급자 요청은 정확한 국내 종목코드로 좁혀야 합니다.');
-  assert.match(requestedUrls[0].searchParams.get('beginBasDt') || '', /^\d{8}$/);
-  assert.match(requestedUrls[0].searchParams.get('endBasDt') || '', /^\d{8}$/);
-  assert.equal(firstChart.interval, '1d');
-  assert.equal(firstChart.kind, 'daily-ohlcv');
-  assert.equal(firstChart.periodBasis, 'calendar-days');
-  assert.equal(firstChart.timezone, 'Asia/Seoul');
-  assert.equal(firstChart.delayed, true);
-  assert.equal(firstChart.refreshMs, DAY_MS);
-  assert.deepEqual(firstChart.bars.map((bar) => bar.date), [...firstChart.bars.map((bar) => bar.date)].sort(), '일봉은 날짜 오름차순이어야 합니다.');
-  assert.equal(firstChart.bars.length, 3, '정확한 종목·국내 시장·정상 OHLCV만 남겨야 합니다.');
-  assert.equal(firstChart.bars[1].close, 120, '같은 날짜의 마지막 정상 행 하나만 남겨야 합니다.');
-  assert.equal(firstChart.bars[1].change, 15, '등락값이 없으면 이전 종가로 계산해야 합니다.');
-  assert.ok(Math.abs(firstChart.bars[1].changeRate - (15 / 105 * 100)) < 1e-9, '등락률이 없으면 이전 종가로 계산해야 합니다.');
-  assert.deepEqual(concurrentChart.bars, firstChart.bars);
+  const tenYearRange = historyRange('10y', Date.parse('2021-03-01T03:00:00.000Z'));
+  for (const [total, expectedPages] of [[0, 1], [500, 1], [501, 2], [2501, 6], [3654, 8]]) {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'pages-' + total), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    const calls = pagedMock(total);
+    const bars = await service.fetchKrHistory('005930', tenYearRange);
+    assert.equal(bars.length, total, '정상 다중 페이지 행 수를 모두 반환해야 합니다: ' + total);
+    assert.deepEqual(calls.map((call) => call.page), Array.from({ length: expectedPages }, (_, index) => index + 1), '필요한 페이지를 정확히 한 번씩 요청해야 합니다: ' + total);
+    assert.equal(service.historyBudgetUsed, expectedPages, '논리 요청이 아니라 실제 페이지 수를 예산으로 계산해야 합니다: ' + total);
+  }
 
-  const cachedChart = await chartService.dailyChart(chartUniverse.lookup('005930'), { days: 30 });
-  assert.equal(historyFetchCount, 1, '24시간 안의 같은 종목 일봉은 메모리 캐시를 사용해야 합니다.');
-  assert.equal(cachedChart.cached, true);
-  chartService.historyCache.get('005930').updatedAt = Date.now() - DAY_MS - 1;
-  chartService.fetchKrHistory = async () => firstChart.bars.slice(-1);
-  const partialChart = await chartService.dailyChart(chartUniverse.lookup('005930'), { days: 190 });
-  assert.equal(partialChart.stale, true, '일봉 수가 갑자기 줄어든 응답에는 마지막 정상 일봉을 사용해야 합니다.');
-  assert.match(partialChart.error, /일봉 수가 비정상적으로 줄었습니다/);
-  assert.deepEqual(partialChart.bars, firstChart.bars, '부분 일봉 응답이 마지막 정상 OHLCV를 덮으면 안 됩니다.');
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'too-many'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    const calls = pagedMock(3655);
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /응답 범위/, '10년 달력일 수보다 많은 행은 첫 페이지 뒤 즉시 거부해야 합니다.');
+    assert.equal(calls.length, 1);
+    assert.equal(service.historyBudgetUsed, 1);
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'http-error'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    pagedMock(501, ({ page }) => page === 2 ? { ok: false, status: 503 } : null);
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /2페이지 HTTP 503/);
+    assert.equal(service.historyBudgetUsed, 2, '첫 응답 뒤 계산한 남은 페이지 예산은 공급자 호출 전에 선예약해야 합니다.');
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'header-error'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    pagedMock(501, ({ page }) => page === 2 ? { header: { resultCode: '05', resultMsg: 'TIMEOUT' } } : null);
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /TIMEOUT/);
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'total-change'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    pagedMock(501, ({ page }) => page === 2 ? { total: 500 } : null);
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /totalCount가 페이지마다/);
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'empty-middle'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    pagedMock(1001, ({ page }) => page === 2 ? { items: [] } : null);
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /2페이지 응답 누락/);
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'repeated-page'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    pagedMock(1000, ({ page, begin }) => page === 2 ? {
+      items: Array.from({ length: 500 }, (_, index) => historyRow('005930', compactDay(begin, index), index)),
+    } : null);
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /페이지가 반복/);
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'duplicate-date'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    pagedMock(501, ({ page, begin }) => page === 2 ? { items: [historyRow('005930', begin, 500)] } : null);
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /날짜가 중복/);
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'bad-row'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    pagedMock(1, ({ items }) => ({ items: [{ ...items[0], srtnCd: '000660' }] }));
+    await assert.rejects(() => service.fetchKrHistory('005930', tenYearRange), /잘못된 종목코드/);
+  }
+  {
+    const service = new MarketDataService({ dataDir: path.join(chartTempDir, 'budget'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+    service.reserveHistoryBudget(HISTORY_DAILY_BUDGET - 1);
+    const calls = pagedMock(501);
+    await assert.rejects(
+      () => service.fetchKrHistory('005930', tenYearRange),
+      (error) => error?.code === 'HISTORY_DAILY_BUDGET' && error?.statusCode === 503,
+      '남은 페이지를 선예약할 수 없으면 두 번째 페이지 전에 503으로 중단해야 합니다.',
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(service.historyBudgetUsed, HISTORY_DAILY_BUDGET);
+  }
 
-  chartService.historyAttemptAt.set('005930', Date.now() - HISTORY_RETRY_MS - 1);
-  const regressiveBars = firstChart.bars.map((bar) => ({
-    ...bar,
-    date: new Date(Date.parse(`${bar.date}T00:00:00.000Z`) - 10 * DAY_MS).toISOString().slice(0, 10),
+  const simpleBars = (segment) => {
+    const length = Math.max(1, Math.round((Date.UTC(
+      Number(segment.endBasDt.slice(0, 4)), Number(segment.endBasDt.slice(4, 6)) - 1, Number(segment.endBasDt.slice(6, 8)),
+    ) - Date.UTC(
+      Number(segment.beginBasDt.slice(0, 4)), Number(segment.beginBasDt.slice(4, 6)) - 1, Number(segment.beginBasDt.slice(6, 8)),
+    )) / DAY_MS));
+    const offsets = [...new Set([0, Math.floor((length - 1) / 2), length - 1])];
+    return offsets.map((offset) => ({
+      date: compactDay(segment.beginBasDt, offset).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3'),
+      open: 1000 + offset,
+      high: 1010 + offset,
+      low: 990 + offset,
+      close: 1005 + offset,
+      volume: 100 + offset,
+      change: 999,
+      changeRate: 999,
+    }));
+  };
+
+  const coverageService = new MarketDataService({ dataDir: path.join(chartTempDir, 'coverage'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  const coverageCalls = [];
+  coverageService.fetchKrHistory = async (code, segment) => {
+    coverageCalls.push({ code, ...segment });
+    return simpleBars(segment);
+  };
+  const oneYear = await coverageService.dailyChart(chartUniverse.lookup('005930'), { period: '1y' });
+  assert.equal(oneYear.period, '1y');
+  assert.equal(oneYear.months, 12);
+  assert.equal(oneYear.periodBasis, 'calendar-period');
+  assert.equal(oneYear.requestedRangeStart, '2025-08-24');
+  assert.equal(oneYear.rangeEnd, '2026-08-24');
+  assert.equal(oneYear.coverageStart, oneYear.requestedRangeStart);
+  assert.equal(oneYear.partial, false);
+  assert.equal(coverageCalls.length, 1);
+
+  const tenYear = await coverageService.dailyChart(chartUniverse.lookup('005930'), { period: '10y' });
+  assert.equal(coverageCalls.length, 2, '1년 뒤 10년 조회는 빠진 과거 구간만 한 번 확장해야 합니다.');
+  assert.equal(coverageCalls[1].beginBasDt, '20160824');
+  assert.equal(coverageCalls[1].endBasDt, '20250824');
+  assert.equal(tenYear.coverageStart, '2016-08-24');
+  assert.equal(tenYear.partial, false);
+  const callsBeforeShorter = coverageCalls.length;
+  const oneMonthFromWideCache = await coverageService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
+  assert.equal(coverageCalls.length, callsBeforeShorter, '10년 cache가 있으면 1개월 요청은 공급자를 호출하지 않아야 합니다.');
+  assert.equal(oneMonthFromWideCache.partial, false);
+  for (let index = 1; index < coverageService.historyCache.get('005930').bars.length; index++) {
+    const bars = coverageService.historyCache.get('005930').bars;
+    assert.equal(bars[index].change, bars[index].close - bars[index - 1].close, '병합한 전체 일봉에서 변화량을 다시 계산해야 합니다.');
+  }
+
+  const beforeInvalidation = structuredClone(coverageService.historyCache.get('005930'));
+  coverageService.invalidateHistoryCache();
+  assert.equal(coverageService.historyCache.get('005930').coverageStart, beforeInvalidation.coverageStart, '일일 무효화는 과거 coverage를 지우면 안 됩니다.');
+  assert.deepEqual(coverageService.historyCache.get('005930').bars, beforeInvalidation.bars, '일일 무효화는 마지막 정상 bars를 보존해야 합니다.');
+  assert.equal(coverageService.historyCache.get('005930').headUpdatedAt, 0);
+  const afterHead = await coverageService.dailyChart(chartUniverse.lookup('005930'), { period: '10y' });
+  assert.equal(coverageCalls.length, callsBeforeShorter + 1);
+  assert.equal(coverageCalls.at(-1).kind, 'head');
+  assert.equal(coverageCalls.at(-1).beginBasDt, '20260805', '최근 head 갱신은 오늘을 포함한 20일만 겹쳐 받아야 합니다.');
+  assert.equal(afterHead.coverageStart, '2016-08-24');
+  assert.equal(afterHead.partial, false);
+  assert.equal(afterHead.bars[0].date, tenYear.bars[0].date, 'head 갱신이 과거 10년 bars를 삭제하면 안 됩니다.');
+
+  const denseHeadBars = Array.from({ length: 10 }, (_, index) => ({
+    date: compactDay('20260815', index).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3'),
+    open: 1000 + index,
+    high: 1010 + index,
+    low: 990 + index,
+    close: 1005 + index,
+    volume: 100 + index,
+    change: index ? 1 : 0,
+    changeRate: index ? 1 / (1004 + index) * 100 : 0,
   }));
-  chartService.fetchKrHistory = async () => regressiveBars;
-  const regressiveChart = await chartService.dailyChart(chartUniverse.lookup('005930'), { days: 190 });
-  assert.equal(regressiveChart.stale, true, '기준일이 역행한 일봉 응답에는 마지막 정상 일봉을 사용해야 합니다.');
-  assert.match(regressiveChart.error, /일봉 기준일이 마지막 정상 기준일보다 이전/);
-  assert.deepEqual(regressiveChart.bars, firstChart.bars, '기준일이 역행한 일봉 응답이 정상 캐시를 덮으면 안 됩니다.');
+  const denseEntry = () => ({
+    bars: structuredClone(denseHeadBars),
+    coverageStart: '2026-07-24',
+    coverageEndExclusive: '2026-08-25',
+    headUpdatedAt: fixedNow,
+    updatedAt: fixedNow,
+  });
+  const partialHeadService = new MarketDataService({ dataDir: path.join(chartTempDir, 'partial-head'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  partialHeadService.rememberHistory('005930', denseEntry());
+  partialHeadService.invalidateHistoryCache();
+  const partialHeadSnapshot = structuredClone(partialHeadService.historyCache.get('005930'));
+  partialHeadService.fetchKrHistory = async () => [...denseHeadBars.slice(0, 6), denseHeadBars.at(-1)];
+  const partialHeadFallback = await partialHeadService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
+  assert.equal(partialHeadFallback.stale, true);
+  assert.equal(partialHeadFallback.partial, false, '완성된 기존 coverage를 쓰는 stale fallback은 부분 기간으로 표시하면 안 됩니다.');
+  assert.match(partialHeadFallback.error, /겹침 구간 수가 비정상적으로 줄었습니다/);
+  assert.deepEqual(partialHeadService.historyCache.get('005930'), partialHeadSnapshot, '80% 미만 head 응답은 cache를 조금도 바꾸면 안 됩니다.');
 
-  chartService.historyAttemptAt.set('005930', Date.now() - HISTORY_RETRY_MS - 1);
-  let historyFailureCalls = 0;
-  chartService.fetchKrHistory = async () => { historyFailureCalls++; throw new Error('의도한 일봉 갱신 실패'); };
-  const staleChart = await chartService.dailyChart(chartUniverse.lookup('005930'), { days: 190 });
-  assert.equal(staleChart.stale, true, '만료 뒤 공급자 장애에는 마지막 정상 일봉임을 표시해야 합니다.');
-  assert.equal(staleChart.fallbackUsed, true);
-  assert.match(staleChart.error, /의도한 일봉 갱신 실패/);
-  assert.equal(staleChart.asOfDate, firstChart.asOfDate, 'fallback에서도 마지막 정상 기준일을 보존해야 합니다.');
-  assert.deepEqual(staleChart.bars, firstChart.bars, 'fallback이 마지막 정상 OHLCV를 바꾸면 안 됩니다.');
-  const staleChartAgain = await chartService.dailyChart(chartUniverse.lookup('005930'), { days: 190 });
-  assert.equal(historyFailureCalls, 1, '일봉 갱신 실패 직후 공급자 호출을 반복하면 안 됩니다.');
-  assert.equal(staleChartAgain.stale, true);
-  assert.deepEqual(staleChartAgain.bars, firstChart.bars);
-  chartService.historyAttemptAt.set('005930', Date.now() - HISTORY_RETRY_MS - 1);
-  await chartService.dailyChart(chartUniverse.lookup('005930'), { days: 190 });
-  assert.equal(historyFailureCalls, 2, '일봉 갱신 실패 뒤 30분이 지나면 제한된 재시도를 허용해야 합니다.');
+  const regressiveHeadService = new MarketDataService({ dataDir: path.join(chartTempDir, 'regressive-head'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  regressiveHeadService.rememberHistory('005930', denseEntry());
+  regressiveHeadService.invalidateHistoryCache();
+  const regressiveHeadSnapshot = structuredClone(regressiveHeadService.historyCache.get('005930'));
+  regressiveHeadService.fetchKrHistory = async () => denseHeadBars.slice(0, 9);
+  const regressiveHeadFallback = await regressiveHeadService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
+  assert.equal(regressiveHeadFallback.stale, true);
+  assert.match(regressiveHeadFallback.error, /마지막 정상 기준일보다 이전입니다/);
+  assert.deepEqual(regressiveHeadService.historyCache.get('005930'), regressiveHeadSnapshot, '기준일이 역행한 head 응답은 cache를 조금도 바꾸면 안 됩니다.');
+
+  const concurrentService = new MarketDataService({ dataDir: path.join(chartTempDir, 'concurrent'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  const concurrentSegments = [];
+  let releaseFirstSegment;
+  concurrentService.fetchKrHistory = async (code, segment) => {
+    concurrentSegments.push({ code, ...segment });
+    if (concurrentSegments.length === 1) await new Promise((resolve) => { releaseFirstSegment = resolve; });
+    return simpleBars(segment);
+  };
+  const shortPromise = concurrentService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const longPromise = concurrentService.dailyChart(chartUniverse.lookup('005930'), { period: '10y' });
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseFirstSegment();
+  const [, concurrentLong] = await Promise.all([shortPromise, longPromise]);
+  assert.equal(concurrentSegments.length, 2, '동시 짧은·긴 요청은 종목 단위로 직렬화하고 빠진 과거 범위만 이어 받아야 합니다.');
+  assert.equal(concurrentSegments[1].kind, 'older');
+  assert.equal(concurrentLong.coverageStart, '2016-08-24');
+  assert.equal(concurrentService.historyActive, 0);
+  assert.equal(concurrentService.historyQueue.length, 0);
+
+  const partialService = new MarketDataService({ dataDir: path.join(chartTempDir, 'partial'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  partialService.fetchKrHistory = async (code, segment) => simpleBars(segment);
+  const normalShort = await partialService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
+  const shortSnapshot = structuredClone(partialService.historyCache.get('005930'));
+  partialService.fetchKrHistory = async () => { throw new Error('의도한 10년 확장 실패'); };
+  const partialLong = await partialService.dailyChart(chartUniverse.lookup('005930'), { period: '10y' });
+  assert.equal(partialLong.stale, true);
+  assert.equal(partialLong.partial, true, '짧은 cache만 있는 10년 fallback은 부분 응답임을 밝혀야 합니다.');
+  assert.match(partialLong.error, /의도한 10년 확장 실패/);
+  assert.deepEqual(partialService.historyCache.get('005930'), shortSnapshot, '실패한 범위의 일부 행은 cache에 병합하면 안 됩니다.');
+  const shortAfterLongFailure = await partialService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
+  assert.equal(shortAfterLongFailure.partial, false, '긴 범위 실패가 이미 완성된 짧은 범위 제공을 막으면 안 됩니다.');
+  assert.deepEqual(shortAfterLongFailure.bars, normalShort.bars);
+
+  const emptyService = new MarketDataService({ dataDir: path.join(chartTempDir, 'empty'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  emptyService.fetchKrHistory = async () => [];
+  const emptyChart = await emptyService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
+  assert.equal(emptyChart.partial, false, 'total=0도 성공적으로 확인한 coverage여야 합니다.');
+  assert.deepEqual(emptyChart.bars, []);
+  assert.equal(emptyChart.availableFrom, '');
 
   const limiterService = new MarketDataService({ dataDir: path.join(chartTempDir, 'limiter'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
   let activeHistoryCalls = 0, maxActiveHistoryCalls = 0;
-  limiterService.fetchKrHistory = async () => {
+  limiterService.fetchKrHistory = async (code, segment) => {
     activeHistoryCalls++;
     maxActiveHistoryCalls = Math.max(maxActiveHistoryCalls, activeHistoryCalls);
     await new Promise((resolve) => setImmediate(resolve));
     activeHistoryCalls--;
-    return firstChart.bars;
+    return simpleBars(segment);
   };
-  await Promise.all(['100001', '100002', '100003'].map((code) => limiterService.dailyChart({ code, name: code, market: 'KOSPI' }, { days: 365 })));
-  assert.equal(maxActiveHistoryCalls, HISTORY_MAX_CONCURRENCY, '서로 다른 일봉 요청도 공급자 동시 호출 상한을 넘으면 안 됩니다.');
-  assert.equal(limiterService.historyActive, 0, '일봉 공급자 작업이 끝나면 활성 슬롯을 모두 반환해야 합니다.');
-  assert.equal(limiterService.historyQueue.length, 0, '일봉 공급자 작업이 끝나면 대기열이 비어야 합니다.');
+  await Promise.all(['100001', '100002', '100003'].map((code) => limiterService.dailyChart({ code, name: code, market: 'KOSPI' }, { period: '1m' })));
+  assert.equal(maxActiveHistoryCalls, HISTORY_MAX_CONCURRENCY, '서로 다른 종목도 공급자 동시 호출 상한을 넘으면 안 됩니다.');
 
   const overloadedService = new MarketDataService({ dataDir: path.join(chartTempDir, 'overloaded'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
   overloadedService.historyActive = HISTORY_MAX_CONCURRENCY;
@@ -454,89 +634,74 @@ try {
   await assert.rejects(
     () => overloadedService.withHistoryProviderSlot(async () => true),
     (error) => error?.code === 'HISTORY_QUEUE_FULL' && error?.statusCode === 503,
-    '일봉 공급자 대기열 상한을 넘으면 즉시 서비스 과부하로 거부해야 합니다.',
   );
 
-  const budgetService = new MarketDataService({ dataDir: path.join(chartTempDir, 'budget'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
-  await budgetService.withHistoryProviderSlot(async () => true);
-  budgetService.historyBudgetUsed = HISTORY_DAILY_BUDGET;
-  budgetService.fetchKrHistory = async () => firstChart.bars;
-  await assert.rejects(
-    () => budgetService.dailyChart({ code: '100004', name: '호출예산', market: 'KOSPI' }, { days: 365 }),
-    /일일 호출 보호 한도/,
-    '내부 일일 호출 예산을 넘으면 공공데이터를 더 호출하면 안 됩니다.',
-  );
+  const retryStatusService = new MarketDataService({ dataDir: path.join(chartTempDir, 'retry-status'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  retryStatusService.fetchKrHistory = async () => { const error = new Error('의도한 예산 실패'); error.code = 'HISTORY_DAILY_BUDGET'; error.statusCode = 503; throw error; };
+  await assert.rejects(() => retryStatusService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' }), (error) => error?.statusCode === 503);
+  await assert.rejects(() => retryStatusService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' }), (error) => error?.statusCode === 503, '30분 재시도 억제 응답도 원래 503 상태를 보존해야 합니다.');
 
+  const lruService = new MarketDataService({ dataDir: path.join(chartTempDir, 'lru'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  const tinyBar = { date: '2026-08-24', open: 1, high: 1, low: 1, close: 1, volume: 0, change: 0, changeRate: 0 };
   for (let index = 0; index <= HISTORY_CACHE_LIMIT; index++) {
-    const code = String(100000 + index).padStart(6, '0');
-    chartService.rememberHistory(code, { bars: firstChart.bars, updatedAt: Date.now() });
+    const code = String(100000 + index);
+    lruService.rememberHistory(code, { bars: [tinyBar], coverageStart: '2026-07-24', coverageEndExclusive: '2026-08-25', headUpdatedAt: fixedNow, updatedAt: fixedNow });
   }
-  assert.equal(chartService.historyCache.size, HISTORY_CACHE_LIMIT, '일봉 캐시 종목 수는 메모리 상한을 넘으면 안 됩니다.');
-  assert.equal(chartService.historyCache.has('100000'), false, '일봉 캐시 상한에서는 가장 오래 사용하지 않은 종목부터 제거해야 합니다.');
-  assert.equal(chartService.historyCache.has(String(100000 + HISTORY_CACHE_LIMIT)), true, '가장 최근 일봉 캐시는 보존해야 합니다.');
-  chartService.historyAttemptAt.set('100001', Date.now());
-  chartService.historyErrors.set('100001', '이전 오류');
-  const generationBeforeInvalidation = chartService.historyGeneration;
-  chartService.invalidateHistoryCache();
-  assert.equal(chartService.historyGeneration, generationBeforeInvalidation + 1, '새 일별 시세 확인 뒤 일봉 캐시 세대를 바꿔야 합니다.');
-  assert.equal(chartService.historyCache.size, HISTORY_CACHE_LIMIT, '새 일별 시세 확인 뒤에도 장애 fallback용 마지막 정상 일봉은 보존해야 합니다.');
-  assert.ok([...chartService.historyCache.values()].every((entry) => entry.updatedAt === 0), '오전에 채운 일봉은 즉시 만료시켜 다음 요청이 새 자료를 확인해야 합니다.');
-  assert.equal(chartService.historyAttemptAt.size, 0, '일봉 캐시 무효화 뒤 과거 시도 시각을 남기면 안 됩니다.');
-  assert.equal(chartService.historyErrors.size, 0, '일봉 캐시 무효화 뒤 과거 오류를 남기면 안 됩니다.');
-  const fallbackCode = String(100000 + HISTORY_CACHE_LIMIT);
-  chartService.fetchKrHistory = async () => { throw new Error('무효화 직후 공급자 실패'); };
-  const fallbackAfterInvalidation = await chartService.dailyChart({ code: fallbackCode, name: fallbackCode, market: 'KOSPI' }, { days: 365 });
-  assert.equal(fallbackAfterInvalidation.stale, true, '공개 시각 뒤 새 일봉 조회가 실패해도 마지막 정상 차트를 표시해야 합니다.');
-  assert.match(fallbackAfterInvalidation.error, /무효화 직후 공급자 실패/);
-  assert.deepEqual(fallbackAfterInvalidation.bars, firstChart.bars, '일봉 무효화는 장애 fallback 자료를 삭제하면 안 됩니다.');
+  assert.equal(lruService.historyCache.size, HISTORY_CACHE_LIMIT);
+  assert.equal(lruService.historyCache.has('100000'), false);
+  const barCapService = new MarketDataService({ dataDir: path.join(chartTempDir, 'bar-cap'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  const manyBars = Array(60000).fill(tinyBar);
+  barCapService.rememberHistory('100001', { bars: manyBars, coverageStart: 'x', coverageEndExclusive: 'y', headUpdatedAt: fixedNow, updatedAt: fixedNow });
+  barCapService.rememberHistory('100002', { bars: manyBars, coverageStart: 'x', coverageEndExclusive: 'y', headUpdatedAt: fixedNow, updatedAt: fixedNow });
+  assert.equal(barCapService.historyCache.has('100001'), false, '총 봉 수 상한을 넘으면 가장 오래된 종목을 제거해야 합니다.');
+  assert.equal(barCapService.historyBarCount, 60000);
 
   const invalidationService = new MarketDataService({ dataDir: path.join(chartTempDir, 'invalidation'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
   let releaseInflightHistory;
-  invalidationService.fetchKrHistory = async () => new Promise((resolve) => { releaseInflightHistory = () => resolve(firstChart.bars); });
-  const invalidatedInflight = invalidationService.dailyChart(chartUniverse.lookup('005930'), { days: 365 });
+  invalidationService.fetchKrHistory = async (code, segment) => {
+    await new Promise((resolve) => { releaseInflightHistory = resolve; });
+    return simpleBars(segment);
+  };
+  const invalidatedInflight = invalidationService.dailyChart(chartUniverse.lookup('005930'), { period: '1m' });
   await new Promise((resolve) => setImmediate(resolve));
   invalidationService.invalidateHistoryCache();
   releaseInflightHistory();
   await assert.rejects(
     () => invalidatedInflight,
     (error) => error?.code === 'HISTORY_CACHE_INVALIDATED' && error?.statusCode === 503,
-    '공개 시각 경계 전에 시작한 일봉 응답이 무효화 뒤 캐시를 다시 채우면 안 됩니다.',
+    '공개 시각 전에 시작한 공급자 응답은 cache에 반영하면 안 됩니다.',
   );
-  assert.equal(invalidationService.historyErrors.size, 0, '캐시 세대 변경은 30분 공급자 오류로 기록하면 안 됩니다.');
-  invalidationService.fetchKrHistory = async () => firstChart.bars;
-  const refreshedAfterInvalidation = await invalidationService.dailyChart(chartUniverse.lookup('005930'), { days: 365 });
-  assert.equal(refreshedAfterInvalidation.stale, false, '캐시 무효화 직후 다시 요청하면 새 일봉을 받을 수 있어야 합니다.');
 
-  const queuedInvalidationService = new MarketDataService({ dataDir: path.join(chartTempDir, 'queued-invalidation'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
-  const releaseQueuedProviders = [];
-  let queuedProviderStarts = 0;
-  queuedInvalidationService.fetchKrHistory = async () => {
-    const index = queuedProviderStarts++;
-    if (index < HISTORY_MAX_CONCURRENCY) await new Promise((resolve) => releaseQueuedProviders.push(resolve));
-    return firstChart.bars;
+  const queuedService = new MarketDataService({ dataDir: path.join(chartTempDir, 'queued-invalidation'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
+  const releases = [];
+  let providerStarts = 0;
+  queuedService.fetchKrHistory = async (code, segment) => {
+    const index = providerStarts++;
+    if (index < HISTORY_MAX_CONCURRENCY) await new Promise((resolve) => releases.push(resolve));
+    return simpleBars(segment);
   };
-  const queuedResults = ['200001', '200002', '200003'].map((code) => queuedInvalidationService
-    .dailyChart({ code, name: code, market: 'KOSPI' }, { days: 365 })
+  const queuedResults = ['200001', '200002', '200003'].map((code) => queuedService
+    .dailyChart({ code, name: code, market: 'KOSPI' }, { period: '1m' })
     .then((value) => ({ value }), (error) => ({ error })));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(queuedInvalidationService.historyQueue.length, 1, '캐시 경계 검사 전에 세 번째 공급자 요청이 대기 중이어야 합니다.');
-  queuedInvalidationService.invalidateHistoryCache();
-  for (const release of releaseQueuedProviders) release();
-  const [oldActiveOne, oldActiveTwo, queuedAfterInvalidation] = await Promise.all(queuedResults);
-  assert.equal(oldActiveOne.error?.code, 'HISTORY_CACHE_INVALIDATED', '공개 시각 전에 시작한 첫 공급자 응답은 버려야 합니다.');
-  assert.equal(oldActiveTwo.error?.code, 'HISTORY_CACHE_INVALIDATED', '공개 시각 전에 시작한 둘째 공급자 응답은 버려야 합니다.');
-  assert.equal(queuedAfterInvalidation.value?.stale, false, '공개 시각 뒤 실제 호출을 시작한 대기 요청은 새 세대 결과로 사용해야 합니다.');
-  assert.equal(queuedInvalidationService.historyActive, 0, '캐시 경계 처리 뒤 공급자 슬롯을 모두 반환해야 합니다.');
-  assert.equal(queuedInvalidationService.historyQueue.length, 0, '캐시 경계 처리 뒤 공급자 대기열이 비어야 합니다.');
+  assert.equal(queuedService.historyQueue.length, 1);
+  queuedService.invalidateHistoryCache();
+  for (const release of releases) release();
+  const [oldOne, oldTwo, queuedAfter] = await Promise.all(queuedResults);
+  assert.equal(oldOne.error?.code, 'HISTORY_CACHE_INVALIDATED');
+  assert.equal(oldTwo.error?.code, 'HISTORY_CACHE_INVALIDATED');
+  assert.equal(queuedAfter.value?.stale, false, '무효화 뒤 실제 시작한 대기 요청은 새 generation 결과로 받아야 합니다.');
 
   const noKeyService = new MarketDataService({ dataDir: path.join(chartTempDir, 'no-key'), universe: chartUniverse, serviceKey: '' });
-  await assert.rejects(() => noKeyService.fetchKrHistory('005930'), /PUBLIC_DATA_SERVICE_KEY/, '서비스키 없이 공급자 일봉을 호출하면 안 됩니다.');
+  await assert.rejects(() => noKeyService.fetchKrHistory('005930', tenYearRange), /PUBLIC_DATA_SERVICE_KEY/);
   const invalidCodeService = new MarketDataService({ dataDir: path.join(chartTempDir, 'invalid-code'), universe: chartUniverse, serviceKey: 'TEST_KEY' });
-  await assert.rejects(() => invalidCodeService.fetchKrHistory('ABC123'), /6자리/, '비국내 종목코드로 일봉을 조회하면 안 됩니다.');
+  await assert.rejects(() => invalidCodeService.fetchKrHistory('ABC123', tenYearRange), /6자리/);
 } finally {
+  Date.now = realDateNow;
   globalThis.fetch = chartRealFetch;
   rmSync(chartTempDir, { recursive: true, force: true });
 }
+
 
 const envExample = read('.env.example');
 assert.doesNotMatch(envExample, /^PUBLIC_DATA_REFRESH_MS=/m, '고정 하루 주기를 오래된 서버 환경값이 덮어쓰면 안 됩니다.');
@@ -566,8 +731,9 @@ assert.ok(serverSource.includes(chartStudentLimit), '일봉 차트 API는 학생
 assert.ok(serverSource.includes(chartIpLimit), '일봉 차트 API는 IP별 요청 제한도 적용해야 합니다.');
 assert.ok(serverSource.includes(chartGlobalLimit), '일봉 차트 API는 서버 전체 요청 제한도 적용해야 합니다.');
 assert.ok(serverSource.indexOf(chartStudentLimit) < serverSource.indexOf(chartIpLimit) && serverSource.indexOf(chartIpLimit) < serverSource.indexOf(chartGlobalLimit), '학생 한도 초과 요청이 IP·전체 버킷을 소모하지 않도록 순서대로 즉시 거부해야 합니다.');
-assert.ok(serverSource.includes('marketData.dailyChart(stock,{days})'), '일봉 차트 API는 검증된 국내 종목으로 시세 모듈을 호출해야 합니다.');
-assert.ok(serverSource.includes("periodBasis:'calendar-days'"), '일봉 조회 기간이 달력일 기준임을 응답에 밝혀야 합니다.');
+assert.ok(serverSource.includes('marketData.dailyChart(stock,{period})'), '일봉 차트 API는 검증된 국내 종목과 기간으로 시세 모듈을 호출해야 합니다.');
+assert.ok(serverSource.includes("periodBasis:'calendar-period'"), '일봉 조회 기간이 달력 월·년 기준임을 응답에 밝혀야 합니다.');
+assert.ok(serverSource.includes("url.searchParams.has('days')") && serverSource.includes("url.searchParams.get('period')"), '옛 days 계약은 거부하고 period 화이트리스트만 받아야 합니다.');
 assert.ok(serverSource.includes('domesticCorporateActions'), '기업행동은 국내 6자리 코드 허용목록을 거쳐야 합니다.');
 assert.ok((serverSource.match(/domesticStateView\(/g) || []).length >= 2, '학생 응답과 교사 자산 요약은 국내 상태 보기만 사용해야 합니다.');
 assert.ok(serverSource.includes('if(row) state=(await withStudentState(id,epo,null)).state;'), '기존 학생 로그인 응답도 국내 상태 보기를 사용해야 합니다.');

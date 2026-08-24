@@ -7,7 +7,9 @@ function marketMatch(s,market){if(!market||market==='KR')return true;return s.ma
 function txPrice(t){return fmt(t.price)}
 let config=null,state=null,accessToken=null,refreshToken=localStorage.getItem('cs_refresh')||'',refreshPromise=null,studentInfo=null;
 let stockCache=new Map(),priceMap=new Map(),displayedStocks=[],searchOffset=0,searchTotal=0,selectedCode=null,tradeSide='BUY',searchTimer=null,pollTimer=null,quoteTimer=null,installPrompt=null;
-let dailyChartBars=[],dailyChartMeta=null,dailyChartRangeDays=30,dailyChartRequestId=0,dailyChartResizeTimer=null;
+const DAILY_CHART_CACHE_LIMIT=8,DAILY_CHART_CLIENT_CACHE_MS=10*60*1000;
+let dailyChartBars=[],dailyChartMeta=null,dailyChartRangePeriod='1m',dailyChartFetchId=0,dailyChartResizeTimer=null,dailyChartLoading=false,tradeDialogGeneration=0;
+const dailyChartCache=new Map(),dailyChartPipelines=new Map(),dailyChartPending=new Map();
 
 function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(el.t);el.t=setTimeout(()=>el.classList.remove('show'),2600)}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
@@ -89,7 +91,7 @@ function prefillLogin(){
   $('#welcome').classList.remove('hidden');
 }
 function showApp(){$('#welcome').classList.add('hidden');$('#app').classList.remove('hidden');renderAll();refreshHeldQuotes();clearInterval(quoteTimer);quoteTimer=setInterval(refreshHeldQuotes,300000);startPolling()}
-function logout(){const dialog=$('#tradeDialog');if(dialog?.open)dialog.close();dailyChartRequestId++;accessToken=null;refreshToken='';localStorage.removeItem('cs_refresh');state=null;studentInfo=null;selectedCode=null;clearInterval(pollTimer);clearInterval(quoteTimer);prefillLogin()}
+function logout(){const dialog=$('#tradeDialog');if(dialog?.open)dialog.close();tradeDialogGeneration++;dailyChartFetchId++;accessToken=null;refreshToken='';localStorage.removeItem('cs_refresh');state=null;studentInfo=null;selectedCode=null;clearInterval(pollTimer);clearInterval(quoteTimer);prefillLogin()}
 function startPolling(){clearInterval(pollTimer);pollTimer=setInterval(()=>{if(state)refreshMe().catch(e=>console.warn(e.message))},20000)}
 async function refreshMe(){const d=await api('/api/me');state=d.state;studentInfo={...studentInfo,classCode:d.classCode,nickname:d.nickname};if(d.appliedActions?.some(a=>a.affected))toast('기업행동이 반영되었습니다.');renderAll()}
 async function refreshHeldQuotes(){if(!state)return;const codes=Object.keys(state.holdings||{});if(!$('#search').value.trim())codes.push(...(config.popular||[]).map(x=>x.code));await refreshQuotes(codes)}
@@ -126,63 +128,101 @@ function svgNode(name,attributes={},textValue=''){
 function chartDate(v){return dateKo(v)}
 function chartVolume(v){const n=Math.max(0,Number(v||0));if(n>=100000000)return`${(n/100000000).toFixed(n>=1000000000?0:1)}억`;if(n>=10000)return`${(n/10000).toFixed(n>=100000?0:1)}만`;return Math.round(n).toLocaleString('ko-KR')}
 function chartUpdatedAt(v){if(v===null||v===undefined||v==='')return'';const n=Number(v),d=new Date(Number.isFinite(n)&&n>0?n:v);return Number.isFinite(d.getTime())?d.toLocaleString('ko-KR'):''}
-function updateDailyChartRangeButtons(){document.querySelectorAll('.daily-chart-range').forEach(button=>{const active=Number(button.dataset.chartDays)===dailyChartRangeDays;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active))})}
-function showDailyChartMessage(kind,message){const status=$('#dailyChartState'),figure=$('#dailyChartFigure');status.textContent=message;status.className=`daily-chart-state ${kind||''}`.trim();figure.classList.add('hidden')}
-function resetDailyChart(){dailyChartBars=[];dailyChartMeta=null;dailyChartRangeDays=30;updateDailyChartRangeButtons();$('#dailyChartSvg').replaceChildren();$('#dailyChartSummary').textContent='';$('#dailyChartMeta').textContent='';$('#dailyChartMeta').className='daily-chart-meta';showDailyChartMessage('loading','일봉 차트를 불러오는 중...')}
-function dailyChartSummaryText(summary){if(!summary)return'';const direction=summary.change>0?'상승':summary.change<0?'하락':'보합',sign=summary.change>0?'+':'';return `최근 ${dailyChartRangeDays}일 범위 · 거래일 ${summary.count}개 · ${chartDate(summary.firstDate)} ${fmt(summary.firstClose)}에서 ${chartDate(summary.lastDate)} ${fmt(summary.lastClose)}으로 ${direction} ${sign}${fmt(summary.change)} (${sign}${summary.changeRate.toFixed(2)}%) · 최고 ${fmt(summary.highest)} · 최저 ${fmt(summary.lowest)}`}
+function dailyChartPeriodSpec(period=dailyChartRangePeriod){return window.DailyChart?.periodSpec(period)||null}
+function chartAxisDate(value){return window.DailyChart?.formatDateTick(value,dailyChartRangePeriod)||String(value||'')}
+function revealDailyChartRange(button){if(button&&typeof button.scrollIntoView==='function')setTimeout(()=>{if($('#tradeDialog')?.open)button.scrollIntoView({block:'nearest',inline:'nearest'})},0)}
+function updateDailyChartRangeButtons(reveal=false){document.querySelectorAll('.daily-chart-range').forEach(button=>{const active=button.dataset.chartPeriod===dailyChartRangePeriod;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));if(active&&reveal)revealDailyChartRange(button)})}
+function showDailyChartMessage(kind,message){const status=$('#dailyChartState'),figure=$('#dailyChartFigure'),panel=$('.daily-chart-panel');dailyChartLoading=kind==='loading';status.textContent=message;status.className=`daily-chart-state ${kind||''}`.trim();figure.classList.add('hidden');panel?.setAttribute('aria-busy',String(dailyChartLoading))}
+function resetDailyChart(){dailyChartBars=[];dailyChartMeta=null;dailyChartRangePeriod='1m';updateDailyChartRangeButtons(true);$('#dailyChartSvg').replaceChildren();$('#dailyChartAggregation').textContent='';$('#dailyChartSummary').textContent='';$('#dailyChartMeta').textContent='';$('#dailyChartMeta').className='daily-chart-meta';showDailyChartMessage('loading','1개월 일봉을 불러오는 중...')}
+function getDailyChartCache(code){const entry=dailyChartCache.get(code);if(!entry)return null;if(Date.now()-entry.loadedAt>DAILY_CHART_CLIENT_CACHE_MS){dailyChartCache.delete(code);return null}dailyChartCache.delete(code);dailyChartCache.set(code,entry);return entry}
+function rememberDailyChartCache(code,entry){dailyChartCache.delete(code);dailyChartCache.set(code,entry);while(dailyChartCache.size>DAILY_CHART_CACHE_LIMIT)dailyChartCache.delete(dailyChartCache.keys().next().value);return entry}
+function ensureDailyChartData(code,period){
+  const chart=window.DailyChart,spec=chart?.periodSpec(period);
+  if(!chart||!spec)return Promise.reject(new Error('차트 조회 기간이 올바르지 않습니다.'));
+  const cached=getDailyChartCache(code);if(cached&&cached.coverageMonths>=spec.months)return Promise.resolve(cached);
+  const pending=dailyChartPending.get(code)||[],covering=pending.find(item=>item.months>=spec.months);
+  if(covering)return covering.promise;
+  const previous=dailyChartPipelines.get(code)||Promise.resolve();
+  const task=previous.catch(()=>{}).then(async()=>{
+    const latest=getDailyChartCache(code);if(latest&&latest.coverageMonths>=spec.months)return latest;
+    const data=await api(`/api/chart?code=${encodeURIComponent(code)}&period=${encodeURIComponent(period)}`);
+    if(String(data?.code||'')!==String(code))throw new Error('차트 종목이 일치하지 않습니다.');
+    if(String(data?.period||'')!==period||Number(data?.months)!==spec.months)throw new Error('차트 조회 기간 응답이 일치하지 않습니다.');
+    const expectedStart=chart.rangeStartForPeriod(data?.rangeEnd,period);
+    if(data?.periodBasis!=='calendar-period'||!expectedStart||String(data?.requestedRangeStart||'')!==expectedStart)throw new Error('차트 달력 범위 응답이 올바르지 않습니다.');
+    return rememberDailyChartCache(code,{bars:chart.normalizeBars(data?.bars),meta:data,coverageMonths:chart.reusableCoverageMonths(data,period),loadedAt:Date.now()});
+  });
+  const record={months:spec.months,promise:task};pending.push(record);dailyChartPending.set(code,pending);dailyChartPipelines.set(code,task);
+  task.finally(()=>{const rest=(dailyChartPending.get(code)||[]).filter(item=>item!==record);if(rest.length)dailyChartPending.set(code,rest);else dailyChartPending.delete(code);if(dailyChartPipelines.get(code)===task)dailyChartPipelines.delete(code)}).catch(()=>{});
+  return task;
+}
+function dailyChartSummaryText(summary){if(!summary)return'';const label=dailyChartPeriodSpec()?.label||dailyChartRangePeriod,direction=summary.change>0?'상승':summary.change<0?'하락':'보합',sign=summary.change>0?'+':'';return `${label} · 실제 ${chartDate(summary.firstDate)}~${chartDate(summary.lastDate)} · 거래일 ${summary.count}개 · ${fmt(summary.firstClose)}에서 ${fmt(summary.lastClose)}으로 ${direction} ${sign}${fmt(summary.change)} (${sign}${summary.changeRate.toFixed(2)}%) · 최고 ${fmt(summary.highest)} · 최저 ${fmt(summary.lowest)}`}
+function showDailyChartEmpty(message='선택한 기간에 표시할 일봉 자료가 없습니다. 신규 상장·거래 이력 또는 공공데이터 제공 범위를 확인해 주세요.'){
+  const source=dailyChartMeta?.sourceLabel||'금융위원회 주식시세정보 공공데이터',checked=chartUpdatedAt(dailyChartMeta?.updatedAt),stale=Boolean(dailyChartMeta?.stale),partial=Boolean(dailyChartMeta?.partial),coverageStart=String(dailyChartMeta?.coverageStart||''),responseLabel=dailyChartPeriodSpec(dailyChartMeta?.period)?.label||dailyChartMeta?.period||'';
+  $('#dailyChartSvg').replaceChildren();$('#dailyChartAggregation').textContent='';$('#dailyChartSummary').textContent='';
+  $('#dailyChartMeta').textContent=`${source}${checked?` · 서버 확인 ${checked}`:''}${partial?` · 서버의 ${responseLabel?`${responseLabel} `:''}조회가 부분 응답${coverageStart?` (서버 보유 범위 시작 ${chartDate(coverageStart)})`:''}`:''}${stale?' · 새 자료 확인 실패로 마지막 정상 자료 확인':''} · 현재 표시 가능한 일봉 없음`;
+  $('#dailyChartMeta').className=`daily-chart-meta${stale||partial?' stale':''}`;showDailyChartMessage('empty',message);
+}
 function renderDailyChart(){
   const chart=window.DailyChart;
   if(!chart){showDailyChartMessage('error','차트 구성요소를 불러오지 못했습니다. 화면을 새로고침해 주세요.');return}
   updateDailyChartRangeButtons();
-  const bars=chart.filterBarsByDays(dailyChartBars,dailyChartRangeDays);
-  if(!bars.length){showDailyChartMessage('empty','표시할 일봉 자료가 없습니다. 다음 영업일 오후에 다시 확인해 주세요.');return}
+  const rangeEnd=dailyChartMeta?.rangeEnd||dailyChartBars.at(-1)?.date||'',bars=chart.filterBarsByRange(dailyChartBars,dailyChartRangePeriod,rangeEnd);
+  if(!bars.length){showDailyChartEmpty();return}
   const figure=$('#dailyChartFigure'),status=$('#dailyChartState'),svg=$('#dailyChartSvg');
-  figure.classList.remove('hidden');status.textContent='일봉 차트를 불러왔습니다.';status.className='daily-chart-state chart-ready';
+  dailyChartLoading=false;figure.classList.remove('hidden');status.className='daily-chart-state chart-ready';$('.daily-chart-panel')?.setAttribute('aria-busy','false');
   const measuredWidth=Math.round(svg.getBoundingClientRect().width||figure.getBoundingClientRect().width||640);
   const width=Math.max(320,measuredWidth),height=width<440?280:340;
   const model=chart.buildChartModel(bars,{width,height});
-  if(!model){showDailyChartMessage('empty','표시할 일봉 자료가 없습니다. 다음 영업일 오후에 다시 확인해 주세요.');return}
+  if(!model){showDailyChartEmpty();return}
   svg.replaceChildren();svg.setAttribute('viewBox',`0 0 ${model.width} ${model.height}`);
   const stockName=$('#tradeName').textContent||dailyChartMeta?.name||dailyChartMeta?.code||'선택 종목';
-  const summaryText=dailyChartSummaryText(model.summary);
-  status.textContent=`${stockName} 일봉 ${model.summary.count}개를 불러왔습니다.`;
-  svg.append(svgNode('title',{id:'dailyChartSvgTitle'},`${stockName} 최근 ${dailyChartRangeDays}일 일봉과 거래량`));
-  svg.append(svgNode('desc',{id:'dailyChartSvgDesc'},`빨간 봉은 종가가 시가보다 높고 파란 봉은 낮습니다. 아래 막대는 거래량입니다. ${summaryText}`));
+  const summaryText=dailyChartSummaryText(model.summary),periodLabel=dailyChartPeriodSpec()?.label||dailyChartRangePeriod,aggregationText=model.aggregated?`원본 일봉 ${fmtNum(model.sourceCount)}개를 화면 폭에 맞춰 ${fmtNum(model.renderedCount)}개 구간으로 묶어 표시합니다.`:'';
+  status.textContent=`${stockName} ${periodLabel} 일봉 ${model.sourceCount}개를 불러왔습니다.${model.aggregated?` 화면에는 ${model.renderedCount}개 구간으로 묶어 표시합니다.`:''}`;
+  svg.append(svgNode('title',{id:'dailyChartSvgTitle'},`${stockName} ${periodLabel} 일봉과 거래량`));
+  svg.append(svgNode('desc',{id:'dailyChartSvgDesc'},`빨간 봉은 종가가 시가보다 높고 파란 봉은 낮습니다. 아래 막대는 거래량입니다. ${aggregationText} ${summaryText}`));
   const {left,right,top,priceBottom,volumeTop,volumeHeight}=model.layout,plotRight=model.width-right;
   for(const tick of model.priceTicks){svg.append(svgNode('line',{class:'daily-chart-grid',x1:left,y1:tick.y,x2:plotRight,y2:tick.y}));svg.append(svgNode('text',{class:'daily-chart-axis',x:left-7,y:tick.y+3.5,'text-anchor':'end'},Math.round(tick.value).toLocaleString('ko-KR')))}
   svg.append(svgNode('line',{class:'daily-chart-divider',x1:left,y1:priceBottom+10,x2:plotRight,y2:priceBottom+10}));
-  svg.append(svgNode('text',{class:'daily-chart-volume-title',x:left,y:volumeTop-6},`거래량 · 최대 ${chartVolume(model.maxVolume)}주`));
+  svg.append(svgNode('text',{class:'daily-chart-volume-title',x:left,y:volumeTop-6},`${model.aggregated?'구간 ':''}거래량 · 최대 ${chartVolume(model.maxVolume)}주`));
   for(const candle of model.candles){
     if(candle.volumeHeight>0)svg.append(svgNode('rect',{class:`daily-chart-volume ${candle.direction}`,x:candle.volumeX,y:candle.volumeY,width:candle.volumeWidth,height:Math.max(.7,candle.volumeHeight),'aria-hidden':'true'}));
     const group=svgNode('g',{class:`daily-chart-candle ${candle.direction}`,'aria-hidden':'true'});
     group.append(svgNode('line',{class:'daily-chart-wick',x1:candle.x,y1:candle.wickTop,x2:candle.x,y2:candle.wickBottom}));
     group.append(svgNode('rect',{class:'daily-chart-body',x:candle.bodyX,y:candle.bodyY,width:candle.bodyWidth,height:candle.bodyHeight,rx:.7}));
-    group.append(svgNode('title',{},`${chartDate(candle.date)} 시가 ${fmt(candle.open)}, 고가 ${fmt(candle.high)}, 저가 ${fmt(candle.low)}, 종가 ${fmt(candle.close)}, 거래량 ${fmtNum(candle.volume)}주`));
+    const candleRange=candle.sourceCount>1?`${chartDate(candle.startDate)}~${chartDate(candle.endDate)} 거래일 ${candle.sourceCount}개 묶음`:chartDate(candle.endDate);
+    group.append(svgNode('title',{},`${candleRange}, 시가 ${fmt(candle.open)}, 고가 ${fmt(candle.high)}, 저가 ${fmt(candle.low)}, 종가 ${fmt(candle.close)}, 거래량 ${fmtNum(candle.volume)}주`));
     svg.append(group);
   }
-  for(const tick of model.dateTicks)svg.append(svgNode('text',{class:'daily-chart-axis',x:tick.x,y:model.height-7,'text-anchor':'middle'},chartDate(tick.date).slice(5)));
+  for(const tick of model.dateTicks)svg.append(svgNode('text',{class:'daily-chart-axis',x:tick.x,y:model.height-7,'text-anchor':'middle'},chartAxisDate(tick.date)));
+  $('#dailyChartAggregation').textContent=aggregationText;
   $('#dailyChartSummary').textContent=summaryText;
-  const lastDate=model.summary.lastDate,source=dailyChartMeta?.sourceLabel||'금융위원회 주식시세정보 공공데이터',checked=chartUpdatedAt(dailyChartMeta?.updatedAt),stale=Boolean(dailyChartMeta?.stale);
-  $('#dailyChartMeta').textContent=`${source} · 마지막 일봉 ${chartDate(lastDate)}${checked?` · 서버 확인 ${checked}`:''}${stale?' · 새 자료 확인 실패로 마지막 정상 자료 표시':''}`;
-  $('#dailyChartMeta').className=`daily-chart-meta${stale?' stale':''}`;
+  const lastDate=model.summary.lastDate,source=dailyChartMeta?.sourceLabel||'금융위원회 주식시세정보 공공데이터',checked=chartUpdatedAt(dailyChartMeta?.updatedAt),stale=Boolean(dailyChartMeta?.stale),availability=chart.rangeAvailability(dailyChartMeta,dailyChartRangePeriod,model.summary.firstDate),responseLabel=chart.periodSpec(dailyChartMeta?.period)?.label||dailyChartMeta?.period||'',partialNote=availability.partial?` · 서버의 ${responseLabel?`${responseLabel} `:''}조회가 부분 응답${availability.coverageStart?` (서버 보유 범위 시작 ${chartDate(availability.coverageStart)})`:''}`:'',historyNote=availability.historyLimited?` · 선택 범위의 첫 제공 일봉 ${chartDate(availability.firstDisplayedDate)} (휴장일·상장일·공공데이터 제공 이력에 따라 시작일이 다를 수 있음)`:'';
+  $('#dailyChartMeta').textContent=`${source} · 마지막 일봉 ${chartDate(lastDate)}${checked?` · 서버 확인 ${checked}`:''}${partialNote}${historyNote}${stale?' · 새 자료 확인 실패로 마지막 정상 자료 표시':''}`;
+  $('#dailyChartMeta').className=`daily-chart-meta${stale||availability.partial?' stale':''}`;
 }
-async function loadDailyChart(code){
-  const requestId=++dailyChartRequestId;
-  resetDailyChart();
-  if(!window.DailyChart){showDailyChartMessage('error','차트 구성요소를 불러오지 못했습니다. 화면을 새로고침해 주세요.');return}
+async function selectDailyChartPeriod(period,{requestPeriod=period,dialogGeneration=tradeDialogGeneration,reset=false,reveal=true}={}){
+  const chart=window.DailyChart,spec=chart?.periodSpec(period),requestSpec=chart?.periodSpec(requestPeriod);
+  if(!chart||!spec||!requestSpec)return showDailyChartMessage('error','차트 조회 기간을 확인하지 못했습니다. 화면을 새로고침해 주세요.');
+  if(reset)resetDailyChart();
+  dailyChartRangePeriod=period;updateDailyChartRangeButtons(reveal);
+  const code=selectedCode,fetchId=++dailyChartFetchId;
+  const cached=getDailyChartCache(code);
+  if(cached&&cached.coverageMonths>=requestSpec.months){dailyChartMeta=cached.meta||{};dailyChartBars=cached.bars||[];if(dailyChartBars.length)renderDailyChart();else showDailyChartEmpty();return}
+  dailyChartBars=[];dailyChartMeta=null;$('#dailyChartSvg').replaceChildren();$('#dailyChartAggregation').textContent='';$('#dailyChartSummary').textContent='';$('#dailyChartMeta').textContent='';$('#dailyChartMeta').className='daily-chart-meta';
+  showDailyChartMessage('loading',`${spec.label} 일봉을 불러오는 중...`);
   try{
-    const data=await api(`/api/chart?code=${encodeURIComponent(code)}&days=365`);
-    if(requestId!==dailyChartRequestId||selectedCode!==code||!$('#tradeDialog').open)return;
-    if(String(data?.code||'')!==String(code))throw new Error('차트 종목이 일치하지 않습니다.');
-    dailyChartMeta=data||{};
-    dailyChartBars=window.DailyChart?.normalizeBars(data?.bars)||[];
-    if(!dailyChartBars.length){const source=data?.sourceLabel||'금융위원회 주식시세정보 공공데이터';$('#dailyChartMeta').textContent=`${source} · 일봉은 하루 1회, 다음 영업일 오후에 반영됩니다.`;showDailyChartMessage('empty','표시할 일봉 자료가 없습니다. 다음 영업일 오후에 다시 확인해 주세요.');return}
+    const entry=await ensureDailyChartData(code,requestPeriod);
+    if(fetchId!==dailyChartFetchId||tradeDialogGeneration!==dialogGeneration||selectedCode!==code||dailyChartRangePeriod!==period||!$('#tradeDialog').open)return;
+    dailyChartMeta=entry.meta||{};dailyChartBars=entry.bars||[];
+    if(!dailyChartBars.length){showDailyChartEmpty();return}
     renderDailyChart();
   }catch(e){
-    if(requestId!==dailyChartRequestId||selectedCode!==code||!$('#tradeDialog').open)return;
+    if(fetchId!==dailyChartFetchId||tradeDialogGeneration!==dialogGeneration||selectedCode!==code||dailyChartRangePeriod!==period||!$('#tradeDialog').open)return;
     console.warn('daily chart',e.message);$('#dailyChartMeta').textContent='일봉은 하루 1회 갱신되며 다음 영업일 오후에 반영될 수 있습니다.';showDailyChartMessage('error','일봉 차트를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.');
   }
 }
+function loadDailyChart(code,dialogGeneration){resetDailyChart();return selectDailyChartPeriod('1m',{requestPeriod:'1y',dialogGeneration,reset:false,reveal:true})}
 
 function relativeTime(value){
   const ts=Date.parse(value||''); if(!ts)return '';
@@ -194,35 +234,35 @@ function renderNews(items){
   if(!items?.length){$('#newsList').innerHTML='<div class="news-empty">최근 관련 뉴스를 찾지 못했습니다.</div>';return}
   $('#newsList').innerHTML=items.map(n=>`<article class="news-item"><div class="news-time">${esc(relativeTime(n.pubDate))}</div><a href="${esc(n.link)}" target="_blank" rel="noopener noreferrer" class="news-title">${esc(n.title)}</a>${n.description?`<p>${esc(n.description)}</p>`:''}${n.source?`<div class="news-source">${esc(n.source)}</div>`:''}<a href="${esc(n.link)}" target="_blank" rel="noopener noreferrer" class="news-link">기사 읽기 →</a></article>`).join('')
 }
-async function loadNews(code){
+async function loadNews(code,dialogGeneration=tradeDialogGeneration){
   $('#newsList').innerHTML='<div class="news-empty">뉴스를 불러오는 중...</div>';
   $('#newsHint').textContent='관련 뉴스 · 원문 링크';
   try{
     const d=await api(`/api/news?code=${encodeURIComponent(code)}`);
-    if(selectedCode!==code||!$('#tradeDialog').open)return;
+    if(tradeDialogGeneration!==dialogGeneration||selectedCode!==code||!$('#tradeDialog').open)return;
     if(!d.enabled){$('#newsList').innerHTML='<div class="news-empty">뉴스를 사용할 수 없습니다.</div>';return}
     renderNews(d.items||[]);
-  }catch(e){if(selectedCode===code&&$('#tradeDialog').open)$('#newsList').innerHTML=`<div class="news-empty">뉴스를 불러오지 못했습니다. ${esc(e.message)}</div>`}
+  }catch(e){if(tradeDialogGeneration===dialogGeneration&&selectedCode===code&&$('#tradeDialog').open)$('#newsList').innerHTML=`<div class="news-empty">뉴스를 불러오지 못했습니다. ${esc(e.message)}</div>`}
 }
 
 function blockReason(s,h){if(s?.tradeBlockedReason)return s.tradeBlockedReason;if(h?.status&&h.status!=='ACTIVE')return {HALTED:'거래정지 상태입니다.',DELISTED:'상장폐지되어 거래할 수 없습니다.',REMOVED:'상장 종목 목록에서 제외되어 거래할 수 없습니다.'}[h.status]||'현재 거래할 수 없는 보유주식입니다.';if(s?.active===false)return'상장 종목 목록에서 제외되어 거래할 수 없습니다.';if(s?.tradingHalt)return'현재 거래정지 종목입니다.';if(s?.liquidation)return'정리매매 종목은 교육용 프로그램에서 거래하지 않습니다.';return''}
 async function openTrade(code){
   if(!state)return;
-  selectedCode=code;tradeSide='BUY';
+  const dialogGeneration=++tradeDialogGeneration;selectedCode=code;tradeSide='BUY';
   let s=stockCache.get(code);
-  if(!s){await ensureStockInfo([code]);if(selectedCode!==code)return;s=stockCache.get(code)||{code,name:code,market:'',active:false}}
+  if(!s){await ensureStockInfo([code]);if(tradeDialogGeneration!==dialogGeneration||selectedCode!==code)return;s=stockCache.get(code)||{code,name:code,market:'',active:false}}
   const h=state.holdings?.[code];
   $('#tradeCode').textContent=codeLabel(s);$('#tradeName').textContent=s.name;$('#tradeMarket').textContent=s.market||'';$('#tradePrice').textContent='기준가격 확인 중...';$('#tradeChange').textContent='';if($('#tradeSource'))$('#tradeSource').textContent='';$('#tradeCash').textContent=fmt(state.cash);$('#tradeOwned').textContent=`${h?.qty||0}주`;$('#tradeQty').value=1;$('#tradeComment').value='';
   let reason=blockReason(s,h);$('#tradeStatus').textContent=reason;$('#tradeStatus').classList.toggle('hidden',!reason);setTradeSide('BUY');$('#tradeSubmit').disabled=Boolean(reason);
   if(!$('#tradeDialog').open)$('#tradeDialog').showModal();
-  loadDailyChart(code);loadNews(code);
+  loadDailyChart(code,dialogGeneration);loadNews(code,dialogGeneration);
   try{
     const p=await fetchQuoteUntilReady(code);
-    if(selectedCode!==code||!$('#tradeDialog').open)return;
+    if(tradeDialogGeneration!==dialogGeneration||selectedCode!==code||!$('#tradeDialog').open)return;
     if($('#tradeSource'))$('#tradeSource').textContent=sourceText(p);
     if(!p?.price&&!reason){reason='공공데이터 기준가격이 아직 준비되지 않아 매매할 수 없습니다.';$('#tradeStatus').textContent=reason;$('#tradeStatus').classList.remove('hidden');$('#tradeSubmit').disabled=true;}
     $('#tradePrice').textContent=p?.price?pricePrimary(p):'기준가격 없음';$('#tradeChange').textContent=reason||changeText(p);$('#tradeChange').className=reason?'down':changeClass(p?.changeRate||0);updateEstimate();renderMarket();
-  }catch(e){if(selectedCode!==code||!$('#tradeDialog').open)return;$('#tradePrice').textContent='기준가격 없음';if(!reason)toast(e.message)}
+  }catch(e){if(tradeDialogGeneration!==dialogGeneration||selectedCode!==code||!$('#tradeDialog').open)return;$('#tradePrice').textContent='기준가격 없음';if(!reason)toast(e.message)}
 }
 function setTradeSide(side){tradeSide=side;$('#buyTab').classList.toggle('active',side==='BUY');$('#sellTab').classList.toggle('active',side==='SELL');const b=$('#tradeSubmit');b.textContent=side==='BUY'?'매수하기':'매도하기';b.classList.toggle('btn-buy',side==='BUY');b.classList.toggle('btn-sell',side==='SELL');updateEstimate()}
 function feeFor(amount){return Math.ceil(Number(amount||0)*Number(config?.tradeFeeRate||0))}
@@ -230,15 +270,15 @@ function updateEstimate(){const qp=priceMap.get(selectedCode),p=qp?.price||0,q=M
 async function submitTrade(){
   if(!state||!selectedCode)return;
   const qty=Number($('#tradeQty').value);if(!Number.isInteger(qty)||qty<1)return toast('수량을 확인하세요.');
-  const code=selectedCode,side=tradeSide,dialogGeneration=dailyChartRequestId,comment=$('#tradeComment').value.trim(),b=$('#tradeSubmit');
+  const code=selectedCode,side=tradeSide,dialogGeneration=tradeDialogGeneration,comment=$('#tradeComment').value.trim(),b=$('#tradeSubmit');
   b.disabled=true;b.textContent='기준가격 확인 중...';
   try{
     const d=await api('/api/trade',{method:'POST',body:JSON.stringify({side,code,qty,comment})});
     state=d.state;priceMap.set(code,{...(priceMap.get(code)||{}),code,price:d.execution.price,updatedAt:Date.now(),source:d.execution.source});renderAll();
-    if(selectedCode===code&&dailyChartRequestId===dialogGeneration&&$('#tradeDialog').open)$('#tradeDialog').close();
+    if(selectedCode===code&&tradeDialogGeneration===dialogGeneration&&$('#tradeDialog').open)$('#tradeDialog').close();
     toast(`${d.execution.name} ${qty}주 ${side==='BUY'?'매수':'매도'} 완료 · 수수료 ${fmt(d.execution.fee)}`);
   }catch(e){toast(e.message)}
-  finally{if(selectedCode===code&&dailyChartRequestId===dialogGeneration&&$('#tradeDialog').open){b.disabled=false;b.textContent=tradeSide==='BUY'?'매수하기':'매도하기'}}
+  finally{if(selectedCode===code&&tradeDialogGeneration===dialogGeneration&&$('#tradeDialog').open){b.disabled=false;b.textContent=tradeSide==='BUY'?'매수하기':'매도하기'}}
 }
 
 async function init(){
@@ -267,8 +307,8 @@ async function init(){
 $('#joinBtn').onclick=join;
 document.querySelectorAll('#classCode,#nickname,#pin').forEach(el=>el.addEventListener('keydown',e=>{if(e.key==='Enter')join()}));
 $('#logoutBtn').onclick=logout;
-$('#tradeClose').onclick=()=>$('#tradeDialog').close();$('#tradeDialog').addEventListener('close',()=>{dailyChartRequestId++;clearTimeout(dailyChartResizeTimer)});$('#buyTab').onclick=()=>setTradeSide('BUY');$('#sellTab').onclick=()=>setTradeSide('SELL');$('#tradeQty').oninput=updateEstimate;$('#tradeSubmit').onclick=submitTrade;
-document.querySelectorAll('.daily-chart-range').forEach(button=>button.onclick=()=>{if(!dailyChartBars.length)return;dailyChartRangeDays=Number(button.dataset.chartDays)||30;renderDailyChart()});
+$('#tradeClose').onclick=()=>$('#tradeDialog').close();$('#tradeDialog').addEventListener('close',()=>{tradeDialogGeneration++;dailyChartFetchId++;dailyChartLoading=false;clearTimeout(dailyChartResizeTimer)});$('#buyTab').onclick=()=>setTradeSide('BUY');$('#sellTab').onclick=()=>setTradeSide('SELL');$('#tradeQty').oninput=updateEstimate;$('#tradeSubmit').onclick=submitTrade;
+document.querySelectorAll('.daily-chart-range').forEach(button=>{button.onclick=()=>selectDailyChartPeriod(button.dataset.chartPeriod,{dialogGeneration:tradeDialogGeneration,reveal:true});button.addEventListener('focus',()=>revealDailyChartRange(button))});
 $('#search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>searchStocks(true).catch(e=>toast(e.message)),250)};$('#marketFilter').onchange=()=>searchStocks(true).catch(e=>toast(e.message));$('#moreBtn').onclick=()=>searchStocks(false).catch(e=>toast(e.message));
 document.querySelectorAll('.quick-qty button').forEach(b=>b.onclick=()=>{const p=priceMap.get(selectedCode)?.price||1,h=state.holdings?.[selectedCode]?.qty||0;if(b.dataset.q==='max'&&tradeSide==='BUY'){let q=Math.floor(Number(state.cash||0)/(p*(1+Number(config?.tradeFeeRate||0))));while(q>0&&p*q+feeFor(p*q)>Number(state.cash||0))q--;$('#tradeQty').value=q}else $('#tradeQty').value=b.dataset.q==='max'?h:b.dataset.q;updateEstimate()});
 function switchTab(tab){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));document.querySelectorAll('.tabpage').forEach(x=>x.classList.add('hidden'));const page=$(`#tab-${tab}`);if(page)page.classList.remove('hidden');if(tab==='home'){renderStats();renderHome()}if(tab==='portfolio'){renderPortfolio();refreshHeldQuotes()}if(tab==='history'){renderHistory();renderHistoryCards()}window.scrollTo({top:0,behavior:'smooth'})}
@@ -276,7 +316,7 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.t
 $('#refreshPortfolio').onclick=refreshHeldQuotes;
 
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state)refreshMe().catch(e=>console.warn(e.message))});
-window.addEventListener('resize',()=>{if(!$('#tradeDialog').open||!dailyChartBars.length)return;clearTimeout(dailyChartResizeTimer);const requestId=dailyChartRequestId,code=selectedCode;dailyChartResizeTimer=setTimeout(()=>{if($('#tradeDialog').open&&dailyChartBars.length&&dailyChartRequestId===requestId&&selectedCode===code)renderDailyChart()},120)});
+window.addEventListener('resize',()=>{if(!$('#tradeDialog').open||dailyChartLoading||!dailyChartBars.length)return;clearTimeout(dailyChartResizeTimer);const dialogGeneration=tradeDialogGeneration,fetchId=dailyChartFetchId,code=selectedCode;dailyChartResizeTimer=setTimeout(()=>{if($('#tradeDialog').open&&!dailyChartLoading&&dailyChartBars.length&&tradeDialogGeneration===dialogGeneration&&dailyChartFetchId===fetchId&&selectedCode===code)renderDailyChart()},120)});
 
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('#installAppBtn')?.classList.remove('hidden')});
 $('#installAppBtn').onclick=async()=>{if(!installPrompt)return toast('브라우저 메뉴에서 앱 설치 또는 홈 화면에 추가를 선택하세요.');installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;$('#installAppBtn').classList.add('hidden')};

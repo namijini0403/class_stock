@@ -23,7 +23,9 @@
 
 - 금액은 항상 원화 정수(KRW integer). 부동소수점 잔액 연산 금지.
 - 시세 정본은 금융위원회 주식시세정보의 일별 OHLCV다. 하루 1회 새 자료를 확인하며, 기준일 다음 영업일 오후 1시 이후 반영될 수 있다. 시간봉·장중 실시간 시세로 표현하지 않는다.
-- 종목 차트는 공식 일별 OHLCV를 사용한 최근 30·90·180일 범위의 일봉만 제공하며 휴장일에는 봉을 만들지 않는다.
+- 종목 차트 기간은 `1m`·`3m`·`6m`·`1y`·`3y`·`5y`·`10y`이며 한국시간 달력 월·년 경계를 사용한다. 제공 가능한 상장 이후 이력만 표시하고 휴장일에는 가짜 봉을 만들지 않는다.
+- 종목 창은 최근 1년을 먼저 조회하고 3·5·10년은 선택할 때 지연 확장한다. 장기 화면은 원본 일봉을 보존한 채 화면 폭에 맞는 OHLCV 묶음만 그린다.
+- 장기 일봉은 금융위원회 원시 시세이며 수정주가나 투자수익률로 표현하지 않는다. 묶음은 첫 시가·최고 고가·최저 저가·마지막 종가·거래량 합계를 사용한다.
 - 학생 상태 변경은 반드시 `applyTrade` / `applyCorporateActions` / `applyTeacherCommands`를 통해서만 — 트랜잭션 안에서 `SELECT ... FOR UPDATE` 후 저장.
 - npm 의존성은 `pg` 하나만. 새 의존성 추가 금지 — Node 내장(crypto/http/fs)으로 해결.
 - 모든 사용자 노출 문자열은 한국어. 클라이언트 렌더링 시 `esc()` 이스케이프 필수(innerHTML 삽입 전).
@@ -35,6 +37,7 @@
 ```
 node scripts/syntax-check.mjs
 node scripts/check-kr-only.mjs
+node scripts/check-daily-chart.mjs
 node scripts/check-placeholders.mjs
 node scripts/smoke-auth.mjs        (Task 2 이후 존재; DB 불필요)
 node scripts/smoke-server.mjs      (Task 5 이후 존재; DATABASE_URL 필요 — 없으면 skip 출력)
@@ -48,7 +51,7 @@ node scripts/smoke-server.mjs      (Task 5 이후 존재; DATABASE_URL 필요 �
 
 - 학생 상태는 서버측 Postgres JSONB가 정본 (2026-08).
 - 거래 시장은 국내 주식 전용이며 금융위원회 일별 OHLCV를 하루 1회 확인 (2026-08).
-- 종목 차트는 최근 30·90·180일 범위의 일봉으로 제공 (2026-08).
+- 종목 차트는 한국시간 달력 기준 1개월·3개월·6개월·1년·3년·5년·10년 일봉으로 제공 (2026-08-24).
 - 의존성은 pg 하나만 (2026-08).
 - JWT_SECRET 운영 중 회전 금지 — 전 사용자 로그아웃됨 (2026-08).
 
@@ -75,3 +78,4 @@ node scripts/smoke-server.mjs      (Task 5 이후 존재; DATABASE_URL 필요 �
 
 - server.js가 라우팅·거래로직 전부를 가진 정본. lib/db.js가 스키마 정본(부팅 시 CREATE TABLE IF NOT EXISTS).
 - 시세는 `data/stock-universe.json`(커밋됨) + 금융위원회 일별 OHLCV 런타임 캐시. 캐시는 Git/ZIP 제외 대상이다.
+- 차트 API 기간 정본은 `1m`·`3m`·`6m`·`1y`·`3y`·`5y`·`10y`; 최초 1년 조회 뒤 장기 선택 시 coverage를 확장한다.

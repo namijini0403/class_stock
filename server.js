@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { StockUniverse } = require('./lib/universe');
-const { MarketDataService, KR_ATTRIBUTION, MARKET_RETRY_MS, DEFAULT_HISTORY_DAYS, MAX_HISTORY_DAYS } = require('./lib/market-data');
+const { MarketDataService, KR_ATTRIBUTION, MARKET_RETRY_MS, HISTORY_PERIODS, DEFAULT_HISTORY_PERIOD, historyRange } = require('./lib/market-data');
 const { isDomesticCode, isDomesticTransaction, domesticCorporateActions, domesticStateView } = require('./lib/domestic');
 const { msUntilNextKstRefresh, shouldForceInitialKstRefresh } = require('./lib/daily-refresh');
 
@@ -272,7 +272,7 @@ async function fetchNaverNewsRaw(stock) {
   const url = new URL(NAVER_NEWS_API_URL);
   url.searchParams.set('query', `${stock.name} 주식`);
   url.searchParams.set('display', String(NEWS_DISPLAY)); url.searchParams.set('start', '1'); url.searchParams.set('sort', 'date');
-  const r = await fetch(url, { headers: {'X-Naver-Client-Id':NAVER_CLIENT_ID,'X-Naver-Client-Secret':NAVER_CLIENT_SECRET,'User-Agent':'ClassStockSimulator/3.1'},signal:AbortSignal.timeout(6000)});
+  const r = await fetch(url, { headers: {'X-Naver-Client-Id':NAVER_CLIENT_ID,'X-Naver-Client-Secret':NAVER_CLIENT_SECRET,'User-Agent':'ClassStockSimulator/3.2'},signal:AbortSignal.timeout(6000)});
   if (!r.ok) throw new Error(`네이버 뉴스 조회 실패: HTTP ${r.status}`);
   const d = await r.json(); newsFetchCount++;
   return (Array.isArray(d.items)?d.items:[]).slice(0,NEWS_DISPLAY).map((item,i)=>({id:`${stock.code}-${i}-${Date.parse(item.pubDate||'')||Date.now()}`,title:decodeNewsText(item.title),description:decodeNewsText(item.description),link:safeNewsUrl(item.link||item.originallink),originalLink:safeNewsUrl(item.originallink),pubDate:item.pubDate||'',source:'NAVER 뉴스검색'})).filter(x=>x.title&&x.link);
@@ -282,7 +282,7 @@ function xmlValue(block,tag,strip=true){const m=String(block).match(new RegExp(`
 function newsSearchText(stock){return `${stock.name} 주식`;}
 async function fetchPublicRssNews(stock){
   const url=new URL(GOOGLE_NEWS_RSS_URL);url.searchParams.set('q',newsSearchText(stock));url.searchParams.set('hl','ko');url.searchParams.set('gl','KR');url.searchParams.set('ceid','KR:ko');
-  const r=await fetch(url,{headers:{Accept:'application/rss+xml, application/xml, text/xml','User-Agent':'ClassStockSimulator/3.1'},signal:AbortSignal.timeout(6000)});if(!r.ok)throw new Error(`공개 뉴스 RSS 조회 실패: HTTP ${r.status}`);
+  const r=await fetch(url,{headers:{Accept:'application/rss+xml, application/xml, text/xml','User-Agent':'ClassStockSimulator/3.2'},signal:AbortSignal.timeout(6000)});if(!r.ok)throw new Error(`공개 뉴스 RSS 조회 실패: HTTP ${r.status}`);
   const xml=await r.text(),blocks=[...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map(x=>x[1]),items=[];
   for(let i=0;i<blocks.length&&items.length<NEWS_DISPLAY;i++){const b=blocks[i],title=xmlValue(b,'title'),link=safeNewsUrl(xmlValue(b,'link',false)),pubDate=xmlValue(b,'pubDate'),source=xmlValue(b,'source')||'공개 뉴스',rawDesc=xmlValue(b,'description'),description=rawDesc&&rawDesc!==title&&!rawDesc.includes(title)?rawDesc:'';if(title&&link)items.push({id:`${stock.code}-rss-${i}-${Date.parse(pubDate||'')||Date.now()}`,title,description,link,pubDate,source});}
   if(!items.length)throw new Error('공개 뉴스 검색 결과가 없습니다.');newsFetchCount++;return items;
@@ -292,9 +292,9 @@ function gdeltItems(data,stock){const arr=Array.isArray(data?.articles)?data.art
 async function fetchGdeltNews(stock){
   const query=`"${stock.name}"`;
   const c=new URL(GDELT_CONTEXT_API_URL);c.searchParams.set('query',query);c.searchParams.set('mode','artlist');c.searchParams.set('maxrecords',String(Math.max(8,NEWS_DISPLAY)));c.searchParams.set('format','json');c.searchParams.set('timespan','72H');
-  try{const r=await fetch(c,{headers:{Accept:'application/json','User-Agent':'ClassStockSimulator/3.1'},signal:AbortSignal.timeout(6000)});if(r.ok){const items=gdeltItems(await r.json(),stock);if(items.length){newsFetchCount++;return items;}}}catch{}
+  try{const r=await fetch(c,{headers:{Accept:'application/json','User-Agent':'ClassStockSimulator/3.2'},signal:AbortSignal.timeout(6000)});if(r.ok){const items=gdeltItems(await r.json(),stock);if(items.length){newsFetchCount++;return items;}}}catch{}
   const durl=new URL(GDELT_DOC_API_URL);durl.searchParams.set('query',query);durl.searchParams.set('mode','artlist');durl.searchParams.set('maxrecords',String(Math.max(8,NEWS_DISPLAY)));durl.searchParams.set('format','json');durl.searchParams.set('timespan','7d');durl.searchParams.set('sort','datedesc');
-  const r=await fetch(durl,{headers:{Accept:'application/json','User-Agent':'ClassStockSimulator/3.1'},signal:AbortSignal.timeout(6000)});if(!r.ok)throw new Error(`GDELT 뉴스 조회 실패: HTTP ${r.status}`);const items=gdeltItems(await r.json(),stock);if(!items.length)throw new Error('GDELT 뉴스 검색 결과가 없습니다.');newsFetchCount++;return items;
+  const r=await fetch(durl,{headers:{Accept:'application/json','User-Agent':'ClassStockSimulator/3.2'},signal:AbortSignal.timeout(6000)});if(!r.ok)throw new Error(`GDELT 뉴스 조회 실패: HTTP ${r.status}`);const items=gdeltItems(await r.json(),stock);if(!items.length)throw new Error('GDELT 뉴스 검색 결과가 없습니다.');newsFetchCount++;return items;
 }
 async function fetchNewsAuto(stock){const tries=[];if(NAVER_ENABLED&&['AUTO','NAVER'].includes(NEWS_SOURCE))tries.push(()=>fetchNaverNewsRaw(stock));if(['AUTO','PUBLIC','RSS','GOOGLE'].includes(NEWS_SOURCE))tries.push(()=>fetchPublicRssNews(stock));if(['AUTO','PUBLIC','GDELT'].includes(NEWS_SOURCE))tries.push(()=>fetchGdeltNews(stock));if(!tries.length)tries.push(()=>fetchPublicRssNews(stock),()=>fetchGdeltNews(stock));let last;for(const fn of tries){try{const items=await fn();if(items.length)return items}catch(e){last=e}}throw last||new Error('뉴스를 찾지 못했습니다.');}
 async function newsFor(code) {
@@ -508,11 +508,12 @@ const server=http.createServer(async(req,res)=>{
       if(!/^\d{6}$/.test(code)) return sendJson(res,400,{error:'국내 6자리 종목코드를 확인하세요.'});
       const stock=getStock(code);
       if(!stock) return sendJson(res,404,{error:'종목을 찾을 수 없습니다.'});
-      const rawDays=url.searchParams.get('days');
-      const days=rawDays===null?DEFAULT_HISTORY_DAYS:Number(rawDays);
-      if(!Number.isInteger(days)||days<1||days>MAX_HISTORY_DAYS) return sendJson(res,400,{error:`조회 기간은 1~${MAX_HISTORY_DAYS}일 사이의 정수로 입력하세요.`});
-      try{return sendJson(res,200,await marketData.dailyChart(stock,{days}));}
-      catch(e){console.warn('[일별 차트]',code,e.message);const status=e.statusCode===503?503:502;return sendJson(res,status,{error:e.message||'일별 차트를 불러오지 못했습니다.',code,days,periodBasis:'calendar-days',asOfDate:'',interval:'1d',kind:'daily-ohlcv',timezone:'Asia/Seoul',delayed:true,refreshMs:24*60*60*1000,source:'PUBLIC_DATA_KR',sourceLabel:KR_ATTRIBUTION,cached:false,stale:false,fallbackUsed:false,bars:[]});}
+      if(url.searchParams.has('days')) return sendJson(res,400,{error:'조회 기간은 period=1m|3m|6m|1y|3y|5y|10y 중 하나로 입력하세요.'});
+      const period=String(url.searchParams.get('period')??DEFAULT_HISTORY_PERIOD).trim();
+      if(!Object.prototype.hasOwnProperty.call(HISTORY_PERIODS,period)) return sendJson(res,400,{error:'조회 기간은 period=1m|3m|6m|1y|3y|5y|10y 중 하나로 입력하세요.'});
+      const range=historyRange(period);
+      try{return sendJson(res,200,await marketData.dailyChart(stock,{period}));}
+      catch(e){console.warn('[일별 차트]',code,e.message);const status=e.statusCode===503?503:502;return sendJson(res,status,{error:e.message||'일별 차트를 불러오지 못했습니다.',code,period,months:HISTORY_PERIODS[period],periodBasis:'calendar-period',requestedRangeStart:range.requestedRangeStart,rangeEnd:range.rangeEnd,coverageStart:'',availableFrom:'',partial:false,asOfDate:'',interval:'1d',kind:'daily-ohlcv',timezone:'Asia/Seoul',delayed:true,refreshMs:24*60*60*1000,source:'PUBLIC_DATA_KR',sourceLabel:KR_ATTRIBUTION,cached:false,stale:false,fallbackUsed:false,bars:[]});}
     }
     if(req.method==='GET'&&url.pathname==='/api/news'){
       if(!rateLimitOk('news:'+clientIp(req),10,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
@@ -983,7 +984,7 @@ async function refreshMarketDataOnSchedule(){
 async function main(){
   await db.init();
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.1.0: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.2.0: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (하루 1회 확인)');

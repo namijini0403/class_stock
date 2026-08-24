@@ -119,10 +119,10 @@ dialog{border:0;padding:0;background:transparent;max-width:none;color:var(--text
 .daily-chart-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
 .daily-chart-head h3{margin:0;font-size:15px;letter-spacing:-.02em}
 .daily-chart-head p{margin:3px 0 0;color:var(--muted);font-size:10px;line-height:1.45}
-.daily-chart-ranges{display:flex;flex:0 0 auto;padding:2px;border:1px solid var(--line);border-radius:8px;background:#f7f8fa}
-.daily-chart-range{min-width:47px;height:30px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:#717781;font-size:10px;font-weight:800}
+.daily-chart-ranges{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(48px,1fr);flex:0 1 auto;max-width:100%;padding:3px;border:1px solid var(--line);border-radius:8px;background:#f7f8fa;overflow-x:auto;overscroll-behavior-inline:contain;scroll-snap-type:x proximity;scrollbar-width:thin;scrollbar-color:#c9ced6 transparent}
+.daily-chart-range{min-width:48px;height:42px;padding:0 7px;border:0;border-radius:6px;background:transparent;color:#717781;font-size:11px;font-weight:800;white-space:nowrap;scroll-snap-align:nearest}
 .daily-chart-range.active{background:#fff;color:var(--text);box-shadow:0 1px 4px rgba(22,27,36,.1)}
-.daily-chart-range:focus-visible{outline:2px solid #7594e7;outline-offset:2px}
+.daily-chart-range:focus-visible{outline:2px solid #7594e7;outline-offset:-3px}
 .daily-chart-state{display:grid;place-items:center;min-height:150px;margin-top:12px;border:1px dashed var(--line-strong);border-radius:10px;background:#fafbfc;color:var(--muted);font-size:11px;text-align:center;padding:18px;line-height:1.6}
 .daily-chart-state.loading:before{content:"";width:18px;height:18px;margin-right:8px;border:2px solid #d7dbe2;border-top-color:var(--primary);border-radius:50%;animation:chartSpin .75s linear infinite}
 .daily-chart-state.loading{display:flex;align-items:center;justify-content:center}
@@ -150,6 +150,8 @@ dialog{border:0;padding:0;background:transparent;max-width:none;color:var(--text
 .daily-chart-legend span{display:inline-flex;align-items:center;gap:4px}
 .daily-chart-legend i{display:block;width:8px;height:8px;border-radius:2px}
 .legend-up{background:var(--up)}.legend-down{background:var(--down)}.legend-volume{background:#a9afb8}
+.daily-chart-aggregation{margin-top:7px;padding:7px 9px;border-radius:7px;background:#f3f6fb;color:#596579;font-size:9px;line-height:1.5}
+.daily-chart-aggregation:empty{display:none}
 .daily-chart-meta{margin:8px 0 0;color:var(--muted);font-size:9px;line-height:1.5}
 .daily-chart-meta.stale{color:var(--warning);font-weight:700}
 .daily-chart-delay{margin:8px 0 0;padding:9px 10px;border-radius:7px;background:#f7f8fa;color:#6b727c;font-size:9px;line-height:1.55}
@@ -157,10 +159,9 @@ dialog{border:0;padding:0;background:transparent;max-width:none;color:var(--text
 @media (max-width:600px){
   .daily-chart-panel{padding:16px 18px 15px}
   .daily-chart-head{display:block}
-  .daily-chart-ranges{display:grid;grid-template-columns:repeat(3,1fr);width:100%;margin-top:10px}
-  .daily-chart-range{width:100%}
+  .daily-chart-ranges{width:100%;margin-top:10px}
   .daily-chart-state{min-height:132px}
-  .daily-chart-summary{font-size:9px}
+  .daily-chart-summary,.daily-chart-aggregation,.daily-chart-meta,.daily-chart-delay{font-size:10px}
 }
 
 @media (prefers-reduced-motion:reduce){.daily-chart-state.loading:before{animation:none}}

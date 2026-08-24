@@ -8,6 +8,7 @@
 //       GET /api/teacher/students로 명렬표 요약(cash 포함) 확인 →
 //       PIN 재설정(token_epoch 증가) → 새 PIN으로 재로그인 확인 → 서버 종료.
 // 시세 소스가 환경 의존적이므로 /api/trade는 스모크하지 않는다.
+// 자식 서버의 global fetch는 preload에서 차단해 공공데이터 등 외부 HTTP를 절대 호출하지 않는다.
 
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -45,15 +46,22 @@ async function main() {
   const PORT = 20000 + Math.floor(Math.random() * 20000);
   const baseUrl = `http://127.0.0.1:${PORT}`;
   const ADMIN_PASSWORD = 'adminpass1';
+  const blockExternalFetchModule = `data:text/javascript,${encodeURIComponent(`
+    globalThis.fetch = async function smokeBlockedExternalFetch() {
+      throw new Error('SMOKE_EXTERNAL_FETCH_BLOCKED');
+    };
+  `)}`;
 
-  const child = spawn(process.execPath, ['server.js'], {
+  const child = spawn(process.execPath, ['--import', blockExternalFetchModule, 'server.js'], {
     cwd: ROOT,
     env: {
       ...process.env,
       PORT: String(PORT),
       JWT_SECRET: crypto.randomBytes(32).toString('hex'),
       ADMIN_PASSWORD,
-      NODE_ENV: '',
+      PUBLIC_DATA_SERVICE_KEY: 'SMOKE_TEST_KEY_NOT_A_SECRET',
+      // production으로 띄워 첫 실행용 .env/비밀번호 파일이 작업트리에 생성되지 않게 한다.
+      NODE_ENV: 'production',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -109,13 +117,18 @@ async function main() {
     const initialCash = Number(joinBody.state?.cash);
     if (!Number.isFinite(initialCash)) throw new Error('가입 응답에 state.cash가 없음: ' + JSON.stringify(joinBody));
 
-    // 일봉 차트는 학생 로그인과 국내 코드·기간 검증을 통과해야만 공급자를 호출한다.
-    const chartNoAuth = await fetch(`${baseUrl}/api/chart?code=005930&days=190`);
+    // 일봉 차트는 학생 로그인과 국내 코드·허용 기간 검증을 통과해야만 공급자 경계에 도달한다.
+    const chartNoAuth = await fetch(`${baseUrl}/api/chart?code=005930&period=1y`);
     if (chartNoAuth.status !== 401) throw new Error(`미인증 일봉 요청이 거부되지 않음 (status ${chartNoAuth.status})`);
-    const chartBadCode = await fetch(`${baseUrl}/api/chart?code=ABC123&days=190`, { headers: { Authorization: `Bearer ${studentToken}` } });
+    const chartBadCode = await fetch(`${baseUrl}/api/chart?code=ABC123&period=1y`, { headers: { Authorization: `Bearer ${studentToken}` } });
     if (chartBadCode.status !== 400) throw new Error(`비국내 일봉 코드가 거부되지 않음 (status ${chartBadCode.status})`);
-    const chartBadDays = await fetch(`${baseUrl}/api/chart?code=005930&days=0`, { headers: { Authorization: `Bearer ${studentToken}` } });
-    if (chartBadDays.status !== 400) throw new Error(`잘못된 일봉 기간이 거부되지 않음 (status ${chartBadDays.status})`);
+    const chartBadPeriod = await fetch(`${baseUrl}/api/chart?code=005930&period=2y`, { headers: { Authorization: `Bearer ${studentToken}` } });
+    if (chartBadPeriod.status !== 400) throw new Error(`허용되지 않은 일봉 기간이 거부되지 않음 (status ${chartBadPeriod.status})`);
+    const chartAllowedPeriod = await fetch(`${baseUrl}/api/chart?code=005930&period=1y`, { headers: { Authorization: `Bearer ${studentToken}` } });
+    const chartAllowedBody = await chartAllowedPeriod.json();
+    if (chartAllowedPeriod.status !== 502 || !String(chartAllowedBody.error || '').includes('SMOKE_EXTERNAL_FETCH_BLOCKED')) {
+      throw new Error(`허용 일봉 기간이 외부 호출 차단 경계까지 도달하지 않음 (status ${chartAllowedPeriod.status}): ${JSON.stringify(chartAllowedBody)}`);
+    }
 
     // 4) GET /api/me (가입 직후)
     const meRes1 = await fetch(`${baseUrl}/api/me`, { headers: { Authorization: `Bearer ${studentToken}` } });
