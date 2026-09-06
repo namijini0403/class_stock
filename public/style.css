@@ -165,3 +165,12 @@ dialog{border:0;padding:0;background:transparent;max-width:none;color:var(--text
 }
 
 @media (prefers-reduced-motion:reduce){.daily-chart-state.loading:before{animation:none}}
+
+/* CSP(style-src 'self') 대응 — 인라인 style 속성을 대체하는 클래스 */
+.class-code-banner{margin:0 0 4px;padding:13px 17px;border-radius:12px;background:var(--primary);color:#fff;font-size:13px;font-weight:600}
+.table-wrap-spaced{margin-top:12px}
+.teacher-controls-spaced{margin-top:12px}
+.class-cash-controls{margin-top:8px}
+.command-row-reason{margin-top:10px;grid-template-columns:1fr auto}
+.table-empty-cell{text-align:center;padding:25px}
+#historyBody .table-empty-cell{color:#728097;padding:28px}

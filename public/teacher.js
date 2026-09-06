@@ -3,14 +3,17 @@ const fmt=n=>Math.round(Number(n||0)).toLocaleString('ko-KR')+'원';
 let token=sessionStorage.getItem('teacherToken')||'',actor=null,students=[],classes=[];
 function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(el.t);el.t=setTimeout(()=>el.classList.remove('show'),2500)}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
-async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`} : {}),...(opt.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);return d}
+function clearTeacherSession(){sessionStorage.removeItem('teacherToken');sessionStorage.removeItem('teacherActor');token=''}
+function saveTeacherActor(a){try{sessionStorage.setItem('teacherActor',JSON.stringify(a))}catch{}}
+function loadTeacherActor(){try{const raw=sessionStorage.getItem('teacherActor');if(!raw)return null;const a=JSON.parse(raw);return a&&typeof a==='object'&&a.role?a:null}catch{return null}}
+async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`} : {}),...(opt.headers||{})}});const d=await r.json().catch(()=>({}));if(r.status===401&&url!=='/api/teacher/login'){clearTeacherSession();actor=null;showApp();const e=new Error('교사 로그인이 만료되었습니다. 다시 로그인하세요.');e.status=401;throw e}if(!r.ok){const e=new Error(d.error||`HTTP ${r.status}`);e.status=r.status;throw e}return d}
 function scopeQuery(){if(actor?.role!=='admin')return'';const c=$('#scopeClassCode').value.trim();return c?`?classCode=${encodeURIComponent(c)}`:''}
 function selectedIds(){return [...document.querySelectorAll('.student-select:checked')].map(x=>x.value)}
 function updateSelection(){$('#selectionInfo').textContent=`${selectedIds().length}명 선택`}
 function renderClassCodeBanner(code){const b=$('#classCodeBanner');if(!code){b.classList.add('hidden');b.innerHTML='';return}b.classList.remove('hidden');b.innerHTML=`학생 접속 코드: <b>${esc(code)}</b> — 학생은 이 코드 + 닉네임 + PIN으로 접속합니다.`}
 function renderClassSettingsCard(d){if(actor?.role==='admin'){$('#classSettingsCard').classList.add('hidden');return}$('#classSettingsCard').classList.remove('hidden');const cash=d.initialCash==null?'설정 없음':fmt(d.initialCash);$('#classSettingsBody').innerHTML=`<span><b>${esc(d.className||'')}</b></span><span class="muted">초기 자본금 ${esc(cash)}</span><span class="muted">학생 수 ${Number((d.students||[]).length)}명</span>`}
 function renderRoster(){
-  if(!students.length){$('#rosterBody').innerHTML='<tr><td colspan="9" style="text-align:center;padding:25px" class="muted">등록된 학생이 없습니다. 학생이 먼저 학급 코드로 접속해야 합니다.</td></tr>';updateSelection();return}
+  if(!students.length){$('#rosterBody').innerHTML='<tr><td colspan="9" class="muted table-empty-cell">등록된 학생이 없습니다. 학생이 먼저 학급 코드로 접속해야 합니다.</td></tr>';updateSelection();return}
   $('#rosterBody').innerHTML=students.map(s=>{
     const rate=Number(s.profitRate||0);
     const rateCls=rate>0?'up':(rate<0?'down':'');
@@ -56,7 +59,7 @@ async function loadClass(){
   }catch(e){toast(e.message)}
 }
 function statusText(c){if(c.status==='APPLIED')return'반영 완료';if(c.status==='CANCELLED')return'취소됨';return c.status}
-async function loadCommands(){try{const d=await api('/api/teacher/commands'+scopeQuery());const a=d.commands||[];$('#commandBody').innerHTML=a.length?a.map(c=>{const amount=Number(c.amount||0),applied=c.appliedAmount==null?'':`<br><small>실제 ${Number(c.appliedAmount)>=0?'+':''}${fmt(c.appliedAmount)}</small>`;const disabled=c.status==='CANCELLED'||c.reversedBy?'disabled':'';return`<tr><td>${esc(new Date(c.createdAt).toLocaleString('ko-KR'))}</td><td><b>${esc(c.nickname||'?')}</b></td><td class="${amount>=0?'up':'down'}"><b>${amount>=0?'+':''}${fmt(amount)}</b>${applied}</td><td>${esc(c.reason)}</td><td><span class="status status-${esc(c.status)}">${esc(statusText(c))}</span></td><td><button class="secondary cancel-command" data-id="${esc(c.id)}" ${disabled}>${c.status==='APPLIED'?'반대 거래로 취소':'취소'}</button></td></tr>`}).join(''):'<tr><td colspan="6" style="text-align:center;padding:25px" class="muted">기록이 없습니다.</td></tr>';document.querySelectorAll('.cancel-command:not([disabled])').forEach(b=>b.onclick=()=>cancelCommand(b.dataset.id))}catch(e){toast(e.message)}}
+async function loadCommands(){try{const d=await api('/api/teacher/commands'+scopeQuery());const a=d.commands||[];$('#commandBody').innerHTML=a.length?a.map(c=>{const amount=Number(c.amount||0),applied=c.appliedAmount==null?'':`<br><small>실제 ${Number(c.appliedAmount)>=0?'+':''}${fmt(c.appliedAmount)}</small>`;const disabled=c.status==='CANCELLED'||c.reversedBy?'disabled':'';return`<tr><td>${esc(new Date(c.createdAt).toLocaleString('ko-KR'))}</td><td><b>${esc(c.nickname||'?')}</b></td><td class="${amount>=0?'up':'down'}"><b>${amount>=0?'+':''}${fmt(amount)}</b>${applied}</td><td>${esc(c.reason)}</td><td><span class="status status-${esc(c.status)}">${esc(statusText(c))}</span></td><td><button class="secondary cancel-command" data-id="${esc(c.id)}" ${disabled}>${c.status==='APPLIED'?'반대 거래로 취소':'취소'}</button></td></tr>`}).join(''):'<tr><td colspan="6" class="muted table-empty-cell">기록이 없습니다.</td></tr>';document.querySelectorAll('.cancel-command:not([disabled])').forEach(b=>b.onclick=()=>cancelCommand(b.dataset.id))}catch(e){toast(e.message)}}
 async function cancelCommand(id){if(!confirm('이 지급·차감 명령을 취소할까요? 이미 학생에게 반영된 경우 반대 금액 명령이 새로 만들어집니다.'))return;try{await api(`/api/teacher/commands/${encodeURIComponent(id)}/cancel`,{method:'POST',body:'{}'});toast('취소 처리를 기록했습니다.');await loadCommands()}catch(e){toast(e.message)}}
 async function sendCommand(){const ids=selectedIds(),raw=Number(String($('#commandAmount').value).replace(/,/g,''));if(!ids.length)return toast('학생을 선택하세요.');if(!Number.isFinite(raw)||raw<=0)return toast('금액을 양수로 입력하세요.');const reason=$('#commandReason').value.trim();if(!reason)return toast('사유를 입력하세요.');const amount=$('#commandType').value==='TAKE'?-Math.trunc(raw):Math.trunc(raw);if(!confirm(`${ids.length}명에게 ${amount>=0?'지급':'차감'} ${fmt(Math.abs(amount))} 명령을 만들까요?`))return;try{const d=await api('/api/teacher/command',{method:'POST',body:JSON.stringify({studentIds:ids,amount,reason})});toast(`${d.count}명에게 명령을 만들었습니다.`);$('#commandReason').value='';await loadClass()}catch(e){toast(e.message)}}
 async function loadAdminSettings(){if(actor?.role!=='admin')return;try{const d=await api('/api/admin/settings');$('#feeRatePct').value=(Number(d.tradeFeeRate||0)*100).toFixed(3).replace(/0+$/,'').replace(/\.$/,'');$('#feeCurrent').textContent=`현재 ${(Number(d.tradeFeeRate||0)*100).toFixed(3)}%`}catch(e){toast(e.message)}}
@@ -68,7 +71,7 @@ async function loadMarketData(){if(actor?.role!=='admin')return;try{const d=awai
 async function refreshKrMarket(){try{const d=await api('/api/admin/market-data/refresh-kr',{method:'POST',body:'{}'});renderMarketData(d.marketData);toast(d.marketData?.kr?.error?'국내 데이터 갱신 결과를 확인하세요.':'국내 공공데이터를 갱신했습니다.')}catch(e){toast(e.message)}}
 function caTypeKo(t){return({HALT:'거래정지',RESUME:'거래재개',RENAME:'회사명 변경',SPLIT:'주식분할',REVERSE_SPLIT:'주식병합',CODE_CHANGE:'종목코드 변경',MERGER:'기업 합병',DELIST:'상장폐지',REMOVED:'상장목록 제외',RESTORED:'상장목록 복구'}[t]||t)}
 async function loadActions(){if(actor?.role!=='admin')return;try{const d=await api('/api/admin/corporate-actions');const a=d.actions||[];$('#actionList').innerHTML=a.length?a.map(x=>`<div class="action-chip"><b>${esc(caTypeKo(x.type))}</b> · ${esc(x.oldCode||'')} ${x.newCode&&x.newCode!==x.oldCode?`→ ${esc(x.newCode)}`:''} · ${esc(x.effectiveDate||'')} <span class="status status-${esc(x.status)}">${esc(x.status)}</span><br><small>${x.ratioNum&&x.ratioDen?`비율 ${x.ratioNum}/${x.ratioDen} · `:''}${esc(x.note||'')} · ${esc(x.source||'')}</small>${x.status==='PENDING_REVIEW'?`<br><button class="secondary activate-action" data-id="${esc(x.id)}">검토 후 활성화</button>`:''}</div>`).join(''):'<div class="muted">기업행동 기록이 없습니다.</div>';document.querySelectorAll('.activate-action').forEach(b=>b.onclick=()=>activateAction(b.dataset.id))}catch(e){toast(e.message)}}
-async function activateAction(id){if(!confirm('공식 공시의 비율과 단주 정산 조건을 확인했나요? 확인 후 학생 계정에 반영됩니다.'))return;try{await api(`/api/admin/corporate-actions/${encodeURIComponent(id)}`,{method:'POST',body:JSON.stringify({status:'ACTIVE',settlementPrice:Number($('#caSettlement').value||0)})});toast('기업행동을 활성화했습니다.');await loadActions()}catch(e){toast(e.message)}}
+async function activateAction(id){if(!confirm('공식 공시의 비율과 단주 정산 조건을 확인했나요? 확인 후 학생 계정에 반영됩니다.'))return;try{await api(`/api/admin/corporate-actions/${encodeURIComponent(id)}`,{method:'POST',body:JSON.stringify({status:'ACTIVE'})});toast('기업행동을 활성화했습니다.');await loadActions()}catch(e){toast(e.message)}}
 async function createCorporateAction(){const type=$('#caType').value,oldCode=$('#caOldCode').value.trim(),newCode=$('#caNewCode').value.trim(),ratioNum=Number($('#caRatioNum').value||1),ratioDen=Number($('#caRatioDen').value||1),settlementPrice=Number($('#caSettlement').value||0),cashPerOldShare=Number($('#caCashPerShare').value||0),effectiveDate=$('#caDate').value,note=$('#caNote').value.trim();if(!/^\d{6}$/.test(oldCode))return toast('기존 국내 6자리 종목코드를 입력하세요.');if(['CODE_CHANGE','MERGER'].includes(type)&&!/^\d{6}$/.test(newCode))return toast('새 국내 6자리 종목코드를 입력하세요.');if(!confirm(`${caTypeKo(type)}를 등록할까요? 학생 세이브에 자동 반영될 수 있습니다.`))return;try{await api('/api/admin/corporate-actions',{method:'POST',body:JSON.stringify({type,oldCode,newCode,ratioNum,ratioDen,settlementPrice,cashPerOldShare,effectiveDate,note})});toast('기업행동을 등록했습니다.');$('#caNote').value='';await loadActions()}catch(e){toast(e.message)}}
 
 function renderClassSelects(){
@@ -84,7 +87,7 @@ function renderClassList(){
     const cash=c.initial_cash==null?'':Number(c.initial_cash);
     return `<div class="action-chip">
       <b>${esc(c.code)}</b> · ${esc(c.name||'')} · ${esc(c.grade||'')}학년 ${esc(c.class_no||'')}반 · 학생 ${Number(c.student_count||0)}명
-      <div class="teacher-controls" style="margin-top:8px">
+      <div class="teacher-controls class-cash-controls">
         <label>초기 자본금<input class="class-cash-input" type="number" min="0" step="1" data-code="${esc(c.code)}" value="${cash}" /></label>
         <button class="btn btn-secondary btn-small save-class-cash" data-code="${esc(c.code)}">저장</button>
       </div>
@@ -131,11 +134,11 @@ async function saveClassSettings(code){
 async function changePassword(){
   const currentPassword=$('#curPw').value,newPassword=$('#newPw').value;
   if(newPassword.length<8)return toast('새 비밀번호는 8자 이상으로 입력하세요.');
-  try{await api('/api/teacher/password',{method:'POST',body:JSON.stringify({currentPassword,newPassword})});toast('비밀번호가 변경되었습니다.');$('#curPw').value='';$('#newPw').value=''}catch(e){toast(e.message)}
+  try{const d=await api('/api/teacher/password',{method:'POST',body:JSON.stringify({currentPassword,newPassword})});if(d&&d.token){token=d.token;sessionStorage.setItem('teacherToken',token)}toast('비밀번호가 변경되었습니다.');$('#curPw').value='';$('#newPw').value=''}catch(e){toast(e.message)}
 }
-async function login(){try{const d=await api('/api/teacher/login',{method:'POST',body:JSON.stringify({id:$('#teacherId').value.trim(),password:$('#teacherPassword').value})});token=d.token;actor=d.actor;sessionStorage.setItem('teacherToken',token);showApp()}catch(e){toast(e.message)}}
+async function login(){try{const d=await api('/api/teacher/login',{method:'POST',body:JSON.stringify({id:$('#teacherId').value.trim(),password:$('#teacherPassword').value})});token=d.token;actor=d.actor;sessionStorage.setItem('teacherToken',token);saveTeacherActor(actor);showApp()}catch(e){toast(e.message)}}
 async function showApp(){
-  if(!actor){sessionStorage.removeItem('teacherToken');token='';$('#loginBox').classList.remove('hidden');$('#teacherApp').classList.add('hidden');return}
+  if(!actor){clearTeacherSession();$('#loginBox').classList.remove('hidden');$('#teacherApp').classList.add('hidden');return}
   $('#loginBox').classList.add('hidden');$('#teacherApp').classList.remove('hidden');
   $('#actorName').textContent=actor.name;
   $('#actorScope').textContent=actor.role==='admin'?'학교 관리자 · 모든 학급 관리 가능':`학급 ${actor.classCode||'미배정'} 담당`;
@@ -157,9 +160,31 @@ async function showApp(){
     await loadMarketData();
     await loadActions();
     $('#caDate').value=new Date().toISOString().slice(0,10);
+    if($('#scopeClassCode').value)await loadClass();
+    else showClassPrompt();
   }
 }
-async function restoreSession(){if(!token)return;try{const d=await api('/api/teacher/students');actor=d.actor;await showApp()}catch{sessionStorage.removeItem('teacherToken');token=''}}
+function showClassPrompt(){
+  const note='학급을 선택한 뒤 불러오기를 누르세요.';
+  students=[];
+  $('#rosterBody').innerHTML=`<tr><td colspan="9" class="muted table-empty-cell">${note}</td></tr>`;
+  $('#commandBody').innerHTML=`<tr><td colspan="6" class="muted table-empty-cell">${note}</td></tr>`;
+  updateSelection();
+}
+async function restoreSession(){
+  if(!token)return;
+  const saved=loadTeacherActor();
+  if(!saved){clearTeacherSession();return}
+  actor=saved;
+  try{
+    const d=await api(saved.role==='admin'?'/api/admin/classes':'/api/teacher/students');
+    if(d&&d.actor){actor=d.actor;saveTeacherActor(actor)}
+  }catch(e){
+    if(e.status===401)return;
+    console.warn('teacher session',e.message);
+  }
+  await showApp();
+}
 async function createTeacher(){
   const classCode=$('#newTeacherClassCode').value;
   if(!classCode)return toast('학급을 선택하세요.');
@@ -184,5 +209,5 @@ async function disableTeacher(loginId){
   try{await api(`/api/admin/teachers/${encodeURIComponent(loginId)}/disable`,{method:'POST',body:'{}'});toast('교사 계정을 비활성화했습니다.');await loadTeachers()}catch(e){toast(e.message)}
 }
 
-$('#loginBtn').onclick=login;$('#refreshKrMarketBtn').onclick=refreshKrMarket;$('#saveFeeBtn').onclick=saveFee;$('#createActionBtn').onclick=createCorporateAction;$('#refreshActionsBtn').onclick=loadActions;$('#teacherPassword').onkeydown=e=>{if(e.key==='Enter')login()};$('#logoutBtn').onclick=()=>{sessionStorage.removeItem('teacherToken');token='';actor=null;showApp()};$('#loadClassBtn').onclick=loadClass;$('#selectAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=true);updateSelection()};$('#clearAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=false);updateSelection()};$('#sendCommandBtn').onclick=sendCommand;$('#refreshCommandsBtn').onclick=loadCommands;$('#createTeacherBtn').onclick=createTeacher;$('#createClassBtn').onclick=createClass;$('#changePwBtn').onclick=changePassword;
+$('#loginBtn').onclick=login;$('#refreshKrMarketBtn').onclick=refreshKrMarket;$('#saveFeeBtn').onclick=saveFee;$('#createActionBtn').onclick=createCorporateAction;$('#refreshActionsBtn').onclick=loadActions;$('#teacherPassword').onkeydown=e=>{if(e.key==='Enter')login()};$('#logoutBtn').onclick=()=>{clearTeacherSession();actor=null;showApp()};$('#loadClassBtn').onclick=loadClass;$('#selectAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=true);updateSelection()};$('#clearAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=false);updateSelection()};$('#sendCommandBtn').onclick=sendCommand;$('#refreshCommandsBtn').onclick=loadCommands;$('#createTeacherBtn').onclick=createTeacher;$('#createClassBtn').onclick=createClass;$('#changePwBtn').onclick=changePassword;
 restoreSession();

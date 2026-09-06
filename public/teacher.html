@@ -31,7 +31,7 @@
       <button id="logoutBtn" class="btn btn-quiet btn-small">로그아웃</button>
     </div>
 
-    <div id="classCodeBanner" class="hidden" style="margin:0 0 4px;padding:13px 17px;border-radius:12px;background:var(--primary);color:#fff;font-size:13px;font-weight:600"></div>
+    <div id="classCodeBanner" class="class-code-banner hidden"></div>
 
     <article id="classSettingsCard" class="card teacher-admin-card hidden">
       <div class="section-head"><div><h2>학급 정보</h2><p>학급 코드·이름·초기 자본금은 학교 관리자만 변경할 수 있습니다.</p></div></div>
@@ -49,7 +49,7 @@
         <div id="adminScope" class="teacher-controls hidden"><label>학급<select id="scopeClassCode"></select></label><button id="loadClassBtn" class="btn btn-secondary btn-small">학급 불러오기</button></div>
       </div>
       <div class="teacher-controls"><button id="selectAllBtn" class="btn btn-secondary btn-small">전체 선택</button><button id="clearAllBtn" class="btn btn-quiet btn-small">선택 해제</button><span id="selectionInfo" class="muted">0명 선택</span></div>
-      <div class="table-wrap" style="margin-top:12px">
+      <div class="table-wrap table-wrap-spaced">
         <table id="rosterTable">
           <thead><tr><th>선택</th><th>닉네임</th><th>보유현금</th><th>보유종목수</th><th>평가금액</th><th>총자산</th><th>수익률</th><th>최근활동</th><th>관리</th></tr></thead>
           <tbody id="rosterBody"></tbody>
@@ -64,7 +64,7 @@
         <label>금액<input id="commandAmount" inputmode="numeric" placeholder="예: 100000" /></label>
         <div></div>
       </div>
-      <div class="command-row" style="margin-top:10px;grid-template-columns:1fr auto">
+      <div class="command-row command-row-reason">
         <label>지급·차감 사유 <span class="optional">필수 · 120자</span><input id="commandReason" maxlength="120" placeholder="예: 학급 활동 보상, 학급 매점 사용" /></label>
         <button id="sendCommandBtn" class="btn btn-primary">선택 학생에게 적용</button>
       </div>
@@ -79,7 +79,7 @@
     <article id="adminMarketData" class="card teacher-admin-card hidden">
       <div class="section-head"><div><h2>시세 데이터 상태</h2><p>국내 공공데이터의 마지막 기준일과 하루 1회 확인 주기를 확인합니다.</p></div></div>
       <div id="marketDataStatus" class="market-note">시세 상태를 불러오는 중입니다.</div>
-      <div class="teacher-controls" style="margin-top:12px">
+      <div class="teacher-controls teacher-controls-spaced">
         <button id="refreshKrMarketBtn" class="btn btn-primary btn-small">국내 공공데이터 새로 확인</button>
       </div>
       <p class="muted">공공데이터는 장중 실시간 가격이 아닌 공식 일별 자료입니다. 서버가 하루 1회 새 자료를 확인하며, 필요하면 위 버튼으로 즉시 확인할 수 있습니다.</p>
