@@ -79,3 +79,6 @@ node scripts/smoke-server.mjs      (Task 5 이후 존재; DATABASE_URL 필요 �
 - server.js가 라우팅·거래로직 전부를 가진 정본. lib/db.js가 스키마 정본(부팅 시 CREATE TABLE IF NOT EXISTS).
 - 시세는 `data/stock-universe.json`(커밋됨) + 금융위원회 일별 OHLCV 런타임 캐시. 캐시는 Git/ZIP 제외 대상이다.
 - 차트 API 기간 정본은 `1m`·`3m`·`6m`·`1y`·`3y`·`5y`·`10y`; 최초 1년 조회 뒤 장기 선택 시 coverage를 확장한다.
+- Railway `class_stock` 서비스의 DATABASE_URL은 반드시 `${{Postgres-2jVt.DATABASE_URL}}` 참조여야 한다. 2026-08-26 배포 실패 원인은 이 값이 빈 문자열로 렌더링된 것(부팅 게이트가 exit 1 → 헬스체크 실패). 값 확인: `railway variables --service class_stock --json`.
+- GitHub 푸시 → Railway 자동배포가 안 될 때는 `railway up --service class_stock --detach`(CLI, 로컬 디렉터리 업로드, .dockerignore 적용)로 배포한다.
+- 공공데이터 시세는 기준일 다음 영업일 13시 이후 반영. `basDt=YYYYMMDD&numOfRows=1`로 totalCount를 찍어 보면 최신 제공일을 알 수 있다.

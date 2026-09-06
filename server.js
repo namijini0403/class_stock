@@ -63,6 +63,23 @@ ensureEnv();
 loadEnv();
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+/**
+ * PUBLIC_DATA_KEY.txt(Git 제외 파일)의 공공데이터 서비스키를 환경변수로 올린다.
+ * 운영 필수값 검사보다 **먼저** 호출해야 한다 — 검사 뒤에 두면 키가 없는 운영 환경에서는
+ * 이미 process.exit(1) 한 뒤라 이 로딩이 영원히 실행되지 않는 죽은 코드가 된다.
+ */
+function loadPublicDataKeyFile() {
+  if (process.env.PUBLIC_DATA_SERVICE_KEY && process.env.PUBLIC_DATA_SERVICE_KEY.trim()) return;
+  const p = path.join(ROOT, 'PUBLIC_DATA_KEY.txt');
+  if (!fs.existsSync(p)) return;
+  let raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim();
+  const prefix = 'PUBLIC_DATA_SERVICE_KEY=';
+  if (raw.startsWith(prefix)) raw = raw.slice(prefix.length).trim();
+  if (raw) process.env.PUBLIC_DATA_SERVICE_KEY = raw;
+}
+loadPublicDataKeyFile();
+
 if (IS_PRODUCTION) {
   const missing = [];
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) missing.push('JWT_SECRET(32자 이상)');
@@ -74,17 +91,6 @@ if (IS_PRODUCTION) {
 
 const { signToken, verifyToken, safeEqual, scryptHash, scryptVerify, lockoutHash, tokenRemainingSeconds } = require('./lib/auth');
 const db = require('./lib/db');
-
-function loadPublicDataKeyFile() {
-  if (process.env.PUBLIC_DATA_SERVICE_KEY && process.env.PUBLIC_DATA_SERVICE_KEY.trim()) return;
-  const p = path.join(ROOT, 'PUBLIC_DATA_KEY.txt');
-  if (!fs.existsSync(p)) return;
-  let raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim();
-  const prefix = 'PUBLIC_DATA_SERVICE_KEY=';
-  if (raw.startsWith(prefix)) raw = raw.slice(prefix.length).trim();
-  if (raw) process.env.PUBLIC_DATA_SERVICE_KEY = raw;
-}
-loadPublicDataKeyFile();
 
 const PORT = Number(process.env.PORT || 3000);
 const INITIAL_CASH = Number(process.env.INITIAL_CASH || 1000000);
@@ -136,6 +142,12 @@ const prices = new Map();
 const quoteInflight = new Map();
 const newsCache = new Map();
 const newsInflight = new Map();
+/**
+ * db.init() 성공 여부. 컨테이너 기동 순간 DB가 잠깐 죽어 있어도 서버는 곧바로 리슨을 시작하고,
+ * 준비될 때까지 DB가 필요한 API만 503으로 막는다(정적 파일·종목·시세·뉴스는 계속 제공).
+ */
+let dbReady = false;
+const DB_OPTIONAL_API_PATHS = new Set(['/api/health','/api/config','/api/stocks','/api/stocks/by-codes','/api/quotes','/api/news']);
 let requestCount = 0;
 let tradeCount = 0;
 let rejectedTradeCount = 0;
@@ -190,14 +202,25 @@ function readJson(req, limit = 1024*1024) {
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function safeStr(v,n=40){ return String(v ?? '').trim().slice(0,n); }
 
-/** 무상태 JWT 디코드 — 교사 세션 Map 없이 Bearer 토큰만으로 판정 (재배포 생존) */
-function getTeacherActor(req) {
+const TEACHER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Bearer 교사 토큰 판정. 환경변수 관리자(tid:'admin')는 DB 계정이 없으므로 토큰만으로 판정하고,
+ * DB 교사 계정은 매 요청 enabled/token_epoch를 확인한다 — 계정 비활성화·비밀번호 변경 즉시
+ * 이전 토큰이 끊긴다(예전에는 12시간 만료까지 계속 사용 가능했다).
+ */
+async function getTeacherActor(req) {
   const auth = String(req.headers.authorization || '');
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!token) return null;
   const p = verifyToken(token);
   if (!p || p.typ !== 'teacher') return null;
-  return { id: p.tid, name: p.name || '', role: p.role === 'admin' ? 'admin' : 'teacher', classCode: p.cls || null };
+  const actor = { id: p.tid, name: p.name || '', role: p.role === 'admin' ? 'admin' : 'teacher', classCode: p.cls || null };
+  if (actor.id === 'admin') return actor.role === 'admin' ? actor : null;
+  if (!TEACHER_ID_RE.test(String(actor.id || ''))) return null;
+  const r = await db.query('SELECT enabled, token_epoch FROM teachers WHERE id=$1', [actor.id]);
+  const row = r.rows[0];
+  if (!row || row.enabled !== true || Number(p.epo || 0) !== Number(row.token_epoch || 0)) return null;
+  return actor;
 }
 /** admin은 요청 파라미터(대문자 정규화)로, 담임 교사는 자신의 classCode로 스코프 고정 */
 function actorClassCode(actor, requested) {
@@ -346,7 +369,7 @@ function applyCorporateActions(state, actions){
           const exact=Number(h.qty||0)*num/den, whole=Math.floor(exact+1e-10), fraction=Math.max(0,exact-whole);
           if(fraction>1e-8 && !(Number(a.settlementPrice||0)>0)) throw new Error(`${actionLabel(a.type)} 단주가 발생해 관리자 단주 정산가격이 필요합니다.`);
           if(fraction>1e-8){cashChange=Math.round(fraction*Number(a.settlementPrice));next.cash=Number(next.cash||0)+cashChange;}
-          const oldCost=Number(h.avgPrice||0)*Number(h.qty||0), extraCash=Number(a.cashPerOldShare||0)*Number(h.qty||0); if(extraCash){next.cash=Number(next.cash||0)+extraCash;cashChange+=extraCash;}
+          const oldCost=Number(h.avgPrice||0)*Number(h.qty||0), extraCash=Math.round(Number(a.cashPerOldShare||0)*Number(h.qty||0)); if(extraCash){next.cash=Number(next.cash||0)+extraCash;cashChange+=extraCash;}
           delete next.holdings[oldCode];
           if(whole>0){
             const existing=next.holdings[newCode]||{qty:0,avgPrice:0}; const existingCost=Number(existing.avgPrice||0)*Number(existing.qty||0); const allocCost=Math.max(0,oldCost-cashChange);
@@ -355,7 +378,7 @@ function applyCorporateActions(state, actions){
           affected=true;detail=`${h.qty}주 → ${whole}주${fraction>1e-8?` · 단주 ${fraction.toFixed(6)}주 현금정산 ${cashChange.toLocaleString('ko-KR')}원`:''}`;
         }
       } else if(a.type==='DELIST'||a.type==='REMOVED'){
-        if(h){h.status=a.type==='DELIST'?'DELISTED':'REMOVED';h.name=a.oldName||h.name;h.valuationPrice=Number(a.settlementPrice||0);affected=true;detail=a.type==='DELIST'?'상장폐지되어 거래할 수 없습니다.':'공식 상장 종목 목록에서 제외되어 거래를 차단했습니다.';if(Number(a.cashPerOldShare||0)>0){cashChange=Math.round(Number(h.qty||0)*Number(a.cashPerOldShare));next.cash=Number(next.cash||0)+cashChange;detail+=` 현금정산 ${cashChange.toLocaleString('ko-KR')}원.`;}}
+        if(h){h.status=a.type==='DELIST'?'DELISTED':'REMOVED';h.name=a.oldName||h.name;h.valuationPrice=Math.round(Number(a.settlementPrice||0));affected=true;detail=a.type==='DELIST'?'상장폐지되어 거래할 수 없습니다.':'공식 상장 종목 목록에서 제외되어 거래를 차단했습니다.';if(Number(a.cashPerOldShare||0)>0){cashChange=Math.round(Number(h.qty||0)*Number(a.cashPerOldShare));next.cash=Number(next.cash||0)+cashChange;detail+=` 현금정산 ${cashChange.toLocaleString('ko-KR')}원.`;}}
       }
       appliedSet.add(a.id);applied.push({id:a.id,type:a.type,affected,cashChange});
       if(affected)next.transactions.unshift({id:crypto.randomUUID(),type:'CORPORATE',at:new Date().toISOString(),side:a.type,code:oldCode,newCode,name:a.oldName||h?.name||oldCode,newName:a.newName||'',qty:h?.qty||0,price:0,amount:Math.abs(cashChange),signedAmount:cashChange,reason:a.note||detail,detail,corporateActionId:a.id});
@@ -426,8 +449,9 @@ async function withStudentState(sid, expectedEpoch, fn) {
 }
 
 /**
- * 교사 명렬표용 학생 state 요약. 현재가는 in-memory 시세 맵(prices)에서 읽되, 상장폐지/제외
- * 종목은 기업행동 정산가(valuationPrice), 그 외 시세가 없으면 평균매입가로 폴백한다.
+ * 교사 명렬표용 학생 state 요약. 현재가는 공공데이터 일별 시세 맵(marketData.kr)에서 읽는다
+ * — 재배포/재시작 직후에도 디스크 캐시에서 복원되므로 비어 있지 않다. 상장폐지/제외 종목은
+ * 기업행동 정산가(valuationPrice), 그 외 시세가 없으면 평균매입가로 폴백한다.
  * capital(원금)은 가입 시점 initialCash + 교사 순지급/차감 누계 — 학급의 현재 initial_cash
  * 설정과는 별개(설정 변경은 신규 가입자에게만 적용됨).
  */
@@ -441,9 +465,13 @@ function summarizeState(state) {
     const h = holdings[code] || {};
     let price;
     if (h.status === 'DELISTED' || h.status === 'REMOVED') price = Number(h.valuationPrice || 0);
-    else price = Number(prices.get(code)?.price ?? h.avgPrice ?? 0);
+    else {
+      const quoted = Number(marketData.quote(getStock(code))?.price || 0);
+      price = quoted > 0 ? quoted : Number(h.valuationPrice || h.avgPrice || 0);
+    }
     holdingsValue += price * Number(h.qty || 0);
   }
+  holdingsValue = Math.round(holdingsValue); // 금액은 항상 원화 정수
   const holdingsCount = codes.length;
   const totalAsset = cash + holdingsValue;
   const capital = Number(state.initialCash || 0) + Number(state.teacherNetAdjustments || 0);
@@ -452,11 +480,16 @@ function summarizeState(state) {
 }
 
 function serveStatic(req,res){
-  let pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname); if(pathname==='/') pathname='/index.html';
+  let pathname;
+  try{ pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname); }
+  catch{ return sendJson(res,404,{error:'Not found'}); } // 잘못된 %인코딩(URIError)은 500이 아니라 404
+  if(pathname==='/') pathname='/index.html';
   const file=path.normalize(path.join(PUBLIC_DIR,pathname));
   if((file!==PUBLIC_DIR&&!file.startsWith(PUBLIC_DIR+path.sep))||!fs.existsSync(file)||fs.statSync(file).isDirectory()) return sendJson(res,404,{error:'Not found'});
   const ext=path.extname(file).toLowerCase(); const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.webmanifest':'application/manifest+json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon'};
-  res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':ext==='.html'?'no-store':'public, max-age=300','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",...(IS_PRODUCTION ? {'Strict-Transport-Security':'max-age=31536000; includeSubDomains'} : {})});
+  // 배포 직후 옛 app.js/스타일이 5분간 남지 않도록 코드 자산은 매번 재검증한다(이미지·아이콘·폰트만 캐시).
+  const cacheControl=ext==='.html'?'no-store':(ext==='.js'||ext==='.css'?'no-cache':'public, max-age=300');
+  res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':cacheControl,'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",...(IS_PRODUCTION ? {'Strict-Transport-Security':'max-age=31536000; includeSubDomains'} : {})});
   fs.createReadStream(file).pipe(res);
 }
 
@@ -476,24 +509,44 @@ async function healthCounts() {
   return healthCountsCache;
 }
 
+let dbPingCache = { at: 0, ok: false };
+/** db:true를 상수로 두지 않기 위한 실제 연결 확인. 30초 캐시(헬스체크가 DB를 두드리지 않도록). */
+async function dbPingOk() {
+  if (!dbReady) return false;
+  if (Date.now() - dbPingCache.at < 30000) return dbPingCache.ok;
+  try {
+    await db.query('SELECT 1');
+    dbPingCache = { at: Date.now(), ok: true };
+  } catch (e) {
+    console.warn('[health] DB 연결 확인 실패:', e.message);
+    dbPingCache = { at: Date.now(), ok: false };
+  }
+  return dbPingCache.ok;
+}
+
 const server=http.createServer(async(req,res)=>{
   requestCount++;
   const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
   try {
+    if(!dbReady&&url.pathname.startsWith('/api/')&&!DB_OPTIONAL_API_PATHS.has(url.pathname)) return sendJson(res,503,{error:'서버가 준비 중입니다. 잠시 후 다시 시도하세요.'});
     if(req.method==='GET'&&url.pathname==='/api/health'){
-      const hc=await healthCounts();
-      return sendJson(res,200,{ok:true,db:true,mode:'OFFICIAL_DELAYED_KR',requestCount,tradeCount,rejectedTradeCount,quoteFetchCount,newsFetchCount,universeCount:universe.stocks.length,retiredCount:universe.retired.size,universeSource:universe.source,marketData:marketData.status(),marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,tradeFeeRate:tradeFeeRate(),corporateActions:hc.corporateActions,students:hc.students,uptimeSec:Math.round(process.uptime())});
+      const dbOk=await dbPingOk();
+      const hc=dbOk?await healthCounts():healthCountsCache;
+      return sendJson(res,dbOk?200:503,{ok:dbOk,db:dbOk,mode:'OFFICIAL_DELAYED_KR',requestCount,tradeCount,rejectedTradeCount,quoteFetchCount,newsFetchCount,universeCount:universe.stocks.length,retiredCount:universe.retired.size,universeSource:universe.source,marketData:marketData.status(),marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,tradeFeeRate:tradeFeeRate(),corporateActions:hc.corporateActions,students:hc.students,uptimeSec:Math.round(process.uptime())});
     }
-    if(req.method==='GET'&&url.pathname==='/api/config'){if(marketData.kr.size===0)await marketData.refreshKr(false);return sendJson(res,200,{initialCash:INITIAL_CASH,mode:'OFFICIAL_DELAYED_KR',marketData:marketData.status(),marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,newsEnabled:true,newsAuto:true,newsProvider:NAVER_ENABLED?'네이버 우선 + 공개뉴스 자동':'공개뉴스 자동',tradeFeeRate:tradeFeeRate(),universe:{count:universe.stocks.length,retiredCount:universe.retired.size,source:universe.source,updatedAt:universe.lastUpdatedAt},popular:POPULAR_CODES.map(getStock).filter(s=>s&&s.active!==false).map(stockView)});}
+    if(req.method==='GET'&&url.pathname==='/api/config'){if(marketData.kr.size===0)marketData.refreshKr(false).catch(e=>console.warn('[국내시세] 초기 적재 실패:',e.message));return sendJson(res,200,{initialCash:INITIAL_CASH,mode:'OFFICIAL_DELAYED_KR',marketData:marketData.status(),marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,newsEnabled:true,newsAuto:true,newsProvider:NAVER_ENABLED?'네이버 우선 + 공개뉴스 자동':'공개뉴스 자동',tradeFeeRate:tradeFeeRate(),universe:{count:universe.stocks.length,retiredCount:universe.retired.size,source:universe.source,updatedAt:universe.lastUpdatedAt},popular:POPULAR_CODES.map(getStock).filter(s=>s&&s.active!==false).map(stockView)});}
     if(req.method==='GET'&&url.pathname==='/api/stocks'){
+      if(!rateLimitOk('stocks:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const limit=Math.min(100,Math.max(1,Number(url.searchParams.get('limit')||50))); const offset=Math.max(0,Number(url.searchParams.get('offset')||0));
       const r=universe.search(url.searchParams.get('q')||'',{market:url.searchParams.get('market')||'',limit,offset}); return sendJson(res,200,{...r,items:r.items.map(stockView),universeCount:universe.stocks.length});
     }
     if(req.method==='GET'&&url.pathname==='/api/stocks/by-codes'){
+      if(!rateLimitOk('bycodes:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const codes=String(url.searchParams.get('codes')||'').split(',').map(x=>x.trim()).filter(Boolean).slice(0,80);
       return sendJson(res,200,{items:universe.byCodes(codes).map(stockView)});
     }
     if(req.method==='GET'&&url.pathname==='/api/quotes'){
+      if(!rateLimitOk('quotes:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const codes=String(url.searchParams.get('codes')||'').split(',').map(x=>x.trim()).filter(Boolean).slice(0,40);
       const quotes=[]; for(const code of codes){ try{ quotes.push(await quoteFor(code)); }catch(e){ quotes.push({code,error:e.message}); } }
       return sendJson(res,200,{quotes});
@@ -511,6 +564,8 @@ const server=http.createServer(async(req,res)=>{
       if(url.searchParams.has('days')) return sendJson(res,400,{error:'조회 기간은 period=1m|3m|6m|1y|3y|5y|10y 중 하나로 입력하세요.'});
       const period=String(url.searchParams.get('period')??DEFAULT_HISTORY_PERIOD).trim();
       if(!Object.prototype.hasOwnProperty.call(HISTORY_PERIODS,period)) return sendJson(res,400,{error:'조회 기간은 period=1m|3m|6m|1y|3y|5y|10y 중 하나로 입력하세요.'});
+      const stuR=await db.query('SELECT token_epoch FROM students WHERE id=$1',[auth.sid]);
+      if(!stuR.rows[0]||Number(auth.epo||0)!==Number(stuR.rows[0].token_epoch)) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
       const range=historyRange(period);
       try{return sendJson(res,200,await marketData.dailyChart(stock,{period}));}
       catch(e){console.warn('[일별 차트]',code,e.message);const status=e.statusCode===503?503:502;return sendJson(res,status,{error:e.message||'일별 차트를 불러오지 못했습니다.',code,period,months:HISTORY_PERIODS[period],periodBasis:'calendar-period',requestedRangeStart:range.requestedRangeStart,rangeEnd:range.rangeEnd,coverageStart:'',availableFrom:'',partial:false,asOfDate:'',interval:'1d',kind:'daily-ohlcv',timezone:'Asia/Seoul',delayed:true,refreshMs:24*60*60*1000,source:'PUBLIC_DATA_KR',sourceLabel:KR_ATTRIBUTION,cached:false,stale:false,fallbackUsed:false,bars:[]});}
@@ -654,7 +709,7 @@ const server=http.createServer(async(req,res)=>{
       const ah=lockoutHash('teacher', id);
       const lock=await db.checkLockout('teacher', ah);
       if(lock.locked) return sendJson(res,423,{error:`비밀번호를 여러 번 틀려 잠시 잠겼습니다. ${lock.remainingSec}초 후 다시 시도하세요.`});
-      let actor=null, loginMethod=null;
+      let actor=null, loginMethod=null, tokenEpoch=0;
       if(id==='admin'){
         if(ADMIN_PASSWORD&&safeEqual(password,ADMIN_PASSWORD)) actor={id:'admin',name:'학교 관리자',role:'admin',classCode:null};
       } else {
@@ -665,7 +720,7 @@ const server=http.createServer(async(req,res)=>{
           // 응답(actor)에는 드러내지 않고 감사로그(details.method)에만 남긴다.
           const personalOk=await scryptVerify(password,t.pw_scrypt);
           const masterOk=personalOk?false:(TEACHER_MASTER_PASSWORD&&safeEqual(password,TEACHER_MASTER_PASSWORD));
-          if(personalOk||masterOk){ actor={id:t.id,name:t.display_name,role:t.role,classCode:t.class_code}; loginMethod=personalOk?'personal':'master'; }
+          if(personalOk||masterOk){ actor={id:t.id,name:t.display_name,role:t.role,classCode:t.class_code}; tokenEpoch=Number(t.token_epoch||0); loginMethod=personalOk?'personal':'master'; }
         }
       }
       if(!actor){
@@ -674,11 +729,11 @@ const server=http.createServer(async(req,res)=>{
       }
       await db.clearAuthFail('teacher', ah);
       await db.audit('TEACHER_LOGIN', actor, loginMethod?{method:loginMethod}:{});
-      const token=signToken({tid:actor.id,role:actor.role,cls:actor.classCode,name:actor.name,typ:'teacher'},43200);
+      const token=signToken({tid:actor.id,role:actor.role,cls:actor.classCode,name:actor.name,epo:tokenEpoch,typ:'teacher'},43200);
       return sendJson(res,200,{token,actor});
     }
     if(url.pathname.startsWith('/api/teacher/')||url.pathname.startsWith('/api/admin/')){
-      const actor=getTeacherActor(req); if(!actor) return sendJson(res,401,{error:'교사 로그인이 필요합니다.'});
+      const actor=await getTeacherActor(req); if(!actor) return sendJson(res,401,{error:'교사 로그인이 필요합니다.'});
       if(req.method==='POST'&&url.pathname==='/api/teacher/password'){
         if(actor.role==='admin') return sendJson(res,400,{error:'관리자 비밀번호는 Railway 환경변수(ADMIN_PASSWORD)에서 변경하세요.'});
         if(!rateLimitOk('pwchange:'+actor.id,5,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
@@ -692,10 +747,13 @@ const server=http.createServer(async(req,res)=>{
           await db.recordAuthFail('teacher', lockoutHash('teacher', row.login_id));
           return sendJson(res,403,{error:'현재 비밀번호가 올바르지 않습니다.'});
         }
-        await db.query('UPDATE teachers SET pw_scrypt=$2, updated_at=now() WHERE id=$1',[row.id, await scryptHash(newPassword)]);
+        // token_epoch를 올려 이전 비밀번호로 발급된 다른 기기의 토큰을 즉시 무효화하고,
+        // 본인 세션이 끊기지 않도록 새 epoch가 담긴 토큰을 함께 돌려준다.
+        const upd=await db.query('UPDATE teachers SET pw_scrypt=$2, token_epoch=token_epoch+1, updated_at=now() WHERE id=$1 RETURNING token_epoch',[row.id, await scryptHash(newPassword)]);
         await db.clearAuthFail('teacher', lockoutHash('teacher', row.login_id));
         await db.audit('TEACHER_PASSWORD_CHANGE', actor, {});
-        return sendJson(res,200,{ok:true});
+        const token=signToken({tid:actor.id,role:actor.role,cls:actor.classCode,name:actor.name,epo:Number(upd.rows[0]?.token_epoch||0),typ:'teacher'},43200);
+        return sendJson(res,200,{ok:true,token});
       }
       if(req.method==='GET'&&url.pathname==='/api/teacher/students'){
         if(actor.role!=='admin'&&!actor.classCode) return sendJson(res,403,{error:'담당 학급이 없습니다. 관리자에게 문의하세요.'});
@@ -849,7 +907,7 @@ const server=http.createServer(async(req,res)=>{
         const changesCode=['CODE_CHANGE','MERGER'].includes(type),oldCode=resolveStockCode(oldInput),newCode=changesCode?resolveStockCode(newInput):oldCode;
         if(!types.has(type)||!oldCode||!getStock(oldCode)) return sendJson(res,400,{error:'기업행동 유형과 국내 6자리 종목코드를 확인하세요.'});
         if(changesCode&&(!newCode||!getStock(newCode))) return sendJson(res,400,{error:'변경/합병 후 국내 6자리 종목코드를 현재 종목 목록에서 확인하세요.'});
-        const ratioNum=Number(b.ratioNum||1),ratioDen=Number(b.ratioDen||1),settlementPrice=Math.max(0,Number(b.settlementPrice||0)),cashPerOldShare=Math.max(0,Number(b.cashPerOldShare||0));
+        const ratioNum=Number(b.ratioNum||1),ratioDen=Number(b.ratioDen||1),settlementPrice=Math.max(0,Number(b.settlementPrice||0)),cashPerOldShare=Math.max(0,Math.trunc(Number(b.cashPerOldShare||0)));
         if(['SPLIT','REVERSE_SPLIT','CODE_CHANGE','MERGER'].includes(type)&&(!(ratioNum>0)||!(ratioDen>0))) return sendJson(res,400,{error:'교환비율을 확인하세요.'});
         const oldStock=getStock(oldCode),newStock=getStock(newCode); const action=await db.addCorporateAction({type,oldCode,newCode,oldName:safeStr(b.oldName,80)||oldStock?.name||'',newName:safeStr(b.newName,80)||newStock?.name||oldStock?.name||'',ratioNum,ratioDen,settlementPrice,cashPerOldShare,effectiveDate:safeStr(b.effectiveDate,10)||new Date().toISOString().slice(0,10),note:safeStr(b.note,200),source:'MANUAL',status:'ACTIVE'},actor);
         return sendJson(res,200,{action});
@@ -860,7 +918,7 @@ const server=http.createServer(async(req,res)=>{
         const existing=db.getCorporateAction(caMatch[1]);
         if(!existing||!domesticCorporateActions([existing]).length)return sendJson(res,404,{error:'국내 기업행동 기록을 찾을 수 없습니다.'});
         const b=await readJson(req,50000); const patch={};
-        if(['ACTIVE','PENDING_REVIEW','DISABLED'].includes(String(b.status||'')))patch.status=String(b.status); for(const k of ['settlementPrice','cashPerOldShare','ratioNum','ratioDen'])if(k in b)patch[k]=Math.max(0,Number(b[k]||0)); if('newCode'in b){const raw=safeStr(b.newCode,50),resolved=resolveStockCode(raw);if(!/^\d{6}$/.test(resolved)||!getStock(resolved))return sendJson(res,400,{error:'국내 6자리 종목코드를 확인하세요.'});patch.newCode=resolved;} if('newName'in b)patch.newName=safeStr(b.newName,80); if('note'in b)patch.note=safeStr(b.note,200);
+        if(['ACTIVE','PENDING_REVIEW','DISABLED'].includes(String(b.status||'')))patch.status=String(b.status); for(const k of ['settlementPrice','cashPerOldShare','ratioNum','ratioDen'])if(k in b)patch[k]=k==='cashPerOldShare'?Math.max(0,Math.trunc(Number(b[k]||0))):Math.max(0,Number(b[k]||0)); if('newCode'in b){const raw=safeStr(b.newCode,50),resolved=resolveStockCode(raw);if(!/^\d{6}$/.test(resolved)||!getStock(resolved))return sendJson(res,400,{error:'국내 6자리 종목코드를 확인하세요.'});patch.newCode=resolved;} if('newName'in b)patch.newName=safeStr(b.newName,80); if('note'in b)patch.note=safeStr(b.note,200);
         return sendJson(res,200,{action:await db.updateCorporateAction(caMatch[1],patch,actor)});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/teachers'){
@@ -891,7 +949,7 @@ const server=http.createServer(async(req,res)=>{
       if(req.method==='POST'&&disableTeacherMatch){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});
         const loginId=safeStr(decodeURIComponent(disableTeacherMatch[1]),40);
-        const r=await db.query('UPDATE teachers SET enabled=false, updated_at=now() WHERE login_id=$1 RETURNING login_id',[loginId]);
+        const r=await db.query('UPDATE teachers SET enabled=false, token_epoch=token_epoch+1, updated_at=now() WHERE login_id=$1 RETURNING login_id',[loginId]);
         if(!r.rows[0]) return sendJson(res,404,{error:'교사 계정을 찾을 수 없습니다.'});
         await db.audit('TEACHER_DISABLE', actor, {loginId});
         return sendJson(res,200,{ok:true});
@@ -981,16 +1039,33 @@ async function refreshMarketDataOnSchedule(){
   scheduleNextMarketDataRefresh(result.configured&&result.error?MARKET_RETRY_MS:msUntilNextPublicDataRefresh());
 }
 
+/**
+ * DB 초기화를 1초→30초 지수 백오프로 무한 재시도한다. 컨테이너 기동 순간의 일시적 DB 장애가
+ * 배포 실패(헬스체크 실패)로 굳어지지 않도록, 리슨을 시작한 뒤 백그라운드로 실행한다.
+ */
+async function initDbWithRetry(){
+  for(let attempt=1,delayMs=1000;;attempt++){
+    try{ await db.init(); dbReady=true; console.log('[db] 연결 준비 완료 — 학생·교사 기능을 시작합니다.'); return; }
+    catch(e){
+      console.error(`[db] 초기화 실패(${attempt}회): ${e.message} — ${Math.round(delayMs/1000)}초 뒤 다시 시도합니다.`);
+      await sleep(delayMs); delayMs=Math.min(30000,delayMs*2);
+    }
+  }
+}
+
 async function main(){
-  await db.init();
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.2.0: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.3.0: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (하루 1회 확인)');
     console.log(`종목목록: ${universe.stocks.length.toLocaleString()}개 (${universe.source})`);
     console.log(`동시 연결 상한: ${server.maxConnections}\n`);
-    refreshMarketDataOnSchedule();
+    console.log('[db] 연결을 준비하는 동안 학생·교사 API는 503으로 응답합니다.');
   });
+  await initDbWithRetry();
+  // 시세 스케줄러는 DB 준비 뒤에 시작한다 — 종목 변경 이벤트를 DB에 먼저 기록해야
+  // 새 시세 캐시를 확정할 수 있으므로(recordUniverseEvents), DB 없이는 갱신이 취소된다.
+  refreshMarketDataOnSchedule();
 }
 main().catch(e => { console.error('[boot] 기동 실패:', e.message); process.exit(1); });
