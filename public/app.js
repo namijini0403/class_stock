@@ -7,6 +7,12 @@ function marketMatch(s,market){if(!market||market==='KR')return true;return s.ma
 function marketKo(market){return {KOSPI:'코스피',KOSDAQ:'코스닥',KONEX:'코넥스'}[String(market||'').trim().toUpperCase()]||'국내'}
 function txPrice(t){return fmt(t.price)}
 let config=null,state=null,accessToken=null,refreshToken=localStorage.getItem('cs_refresh')||'',refreshPromise=null,studentInfo=null;
+let sessionGeneration=0;
+function acceptStudentState(next){
+  if(!next)return false;
+  if(state&&(state.accountId!==next.accountId||Number(next.version||0)<Number(state.version||0)))return false;
+  state=next;return true;
+}
 let stockCache=new Map(),priceMap=new Map(),displayedStocks=[],searchOffset=0,searchTotal=0,searchFetchId=0,selectedCode=null,tradeSide='BUY',searchTimer=null,pollTimer=null,quoteTimer=null,installPrompt=null;
 const DAILY_CHART_CACHE_LIMIT=8,DAILY_CHART_CLIENT_CACHE_MS=10*60*1000;
 let dailyChartBars=[],dailyChartMeta=null,dailyChartRangePeriod='1m',dailyChartFetchId=0,dailyChartResizeTimer=null,dailyChartLoading=false,tradeDialogGeneration=0;
@@ -20,12 +26,16 @@ function dateKo(v){if(!v)return'';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{
 function sourceText(p){if(!p)return'기준가격 조회 전';const src=p.sourceLabel||(p.source==='PUBLIC_DATA_KR'?'금융위원회 공공데이터':'기준가격 없음');return `${src}${p.asOfDate?` · 기준일 ${dateKo(p.asOfDate)}`:''}`}
 
 async function api(url,opt={},_retried=false){
+  const generation=sessionGeneration;
   const headers={'Content-Type':'application/json',...(opt.headers||{})};
   if(accessToken)headers.Authorization=`Bearer ${accessToken}`;
   const r=await fetch(url,{...opt,headers});
   const d=await r.json().catch(()=>({}));
+  if(generation!==sessionGeneration)throw new Error('로그인 계정이 변경되어 이전 요청을 취소했습니다.');
   if(r.status===401){
-    if(!_retried&&await tryRefresh())return api(url,opt,true);
+    const refreshed=!_retried&&await tryRefresh();
+    if(generation!==sessionGeneration)throw new Error('로그인 계정이 변경되어 이전 요청을 취소했습니다.');
+    if(refreshed)return api(url,opt,true);
     logout();
     throw new Error(d.error||'다시 로그인해 주세요.');
   }
@@ -35,16 +45,20 @@ async function api(url,opt={},_retried=false){
 function tryRefresh(){
   if(refreshPromise)return refreshPromise;
   const tokenAtStart=refreshToken;
+  const generation=sessionGeneration;
   if(!tokenAtStart)return Promise.resolve(false);
   const task=(async()=>{try{
     const r=await fetch('/api/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshToken:tokenAtStart})});
     const d=await r.json().catch(()=>({}));
-    if(!r.ok||!d.accessToken||refreshToken!==tokenAtStart)return false;
+    if(generation!==sessionGeneration||refreshToken!==tokenAtStart)return false;
+    if(r.status===401||r.status===403)return false;
+    if(!r.ok||!d.accessToken)throw new Error('로그인 서버 연결이 원활하지 않습니다. 잠시 후 다시 시도하세요.');
     accessToken=d.accessToken;
     if(d.refreshToken){refreshToken=d.refreshToken;localStorage.setItem('cs_refresh',refreshToken)}
     return true;
-  }catch{return false}})();
-  refreshPromise=task.finally(()=>{refreshPromise=null});
+  }catch(e){throw new Error(e.message||'로그인 서버 연결을 확인하세요.')}})();
+  const pending=task.finally(()=>{if(refreshPromise===pending)refreshPromise=null});
+  refreshPromise=pending;
   return refreshPromise;
 }
 
@@ -80,7 +94,7 @@ function renderHome(){
 async function renderPortfolio(){if(!state)return;const entries=Object.entries(state.holdings||{});if(!entries.length){$('#portfolioList').innerHTML='<div class="card empty-card">아직 보유한 주식이 없습니다.</div>';return}await ensureStockInfo(entries.map(x=>x[0]));$('#portfolioList').innerHTML=entries.map(([code,h])=>{const p=priceMap.get(code),s=stockCache.get(code),now=holdingPrice(code,h),pnl=(now-Number(h.avgPrice||0))*Number(h.qty||0),rate=h.avgPrice?(now-h.avgPrice)/h.avgPrice*100:0,status=h.status&&h.status!=='ACTIVE'?h.status:(!s||s.active===false?'REMOVED':s.tradingHalt?'HALTED':s.liquidation?'LIQUIDATION':'ACTIVE'),statusKo={HALTED:'거래정지',DELISTED:'상장폐지',REMOVED:'국내 거래대상 제외',LIQUIDATION:'정리매매'}[status]||'',blocked=status!=='ACTIVE';const cur=blocked?(h.valuationPrice?fmt(h.valuationPrice):'거래 불가'):p?.price?pricePrimary(p,now):'갱신 필요';return`<div class="portfolio-item ${blocked?'portfolio-blocked':''}"><div><strong>${esc(h.name||s?.name||code)}</strong>${statusKo?` <span class="status-badge">${statusKo}</span>`:''}<span class="label">${esc(codeLabel(s||code))} · ${esc(marketKo(s?.market))}</span></div><div><span class="label">보유</span><strong>${fmtNum(h.qty)}주</strong></div><div><span class="label">평균매수가</span><strong>${fmt(h.avgPrice)}</strong></div><div><span class="label">현재가</span><strong>${cur}</strong></div><div><span class="label">평가손익</span><strong class="${changeClass(pnl)}">${pnl>=0?'+':''}${fmt(pnl)} (${rate>=0?'+':''}${rate.toFixed(2)}%)</strong></div><button class="secondary p-trade" data-code="${esc(code)}" ${blocked?'disabled':''}>${blocked?'거래 불가':'거래'}</button></div>`}).join('');document.querySelectorAll('.p-trade:not([disabled])').forEach(b=>b.onclick=()=>openTrade(b.dataset.code))}
 function renderHistory(){if(!state)return;const tx=state.transactions||[];$('#historyBody').innerHTML=tx.length?tx.map(t=>{if(t.type==='TEACHER'){const a=Number(t.signedAmount||0);return`<tr><td>${new Date(t.at).toLocaleString('ko-KR')}</td><td><b>교사 지급·차감</b><br><small>${esc(t.teacherName||'교사')}</small></td><td class="${a>=0?'up':'down'}"><b>${a>=0?'지급':'차감'}</b></td><td>-</td><td>-</td><td class="${a>=0?'up':'down'}"><b>${a>=0?'+':''}${fmt(a)}</b></td><td><span class="history-note">${esc(t.reason||'-')}</span></td></tr>`}if(t.type==='CORPORATE'){const a=Number(t.signedAmount||0);return`<tr><td>${new Date(t.at).toLocaleString('ko-KR')}</td><td><b>${esc(t.name||t.code)}</b><br><small>${esc(t.code||'')}${t.newCode&&t.newCode!==t.code?` → ${esc(t.newCode)}`:''}</small></td><td><b>기업행동</b><br><small>${esc(t.side||'')}</small></td><td>${t.qty?`${fmtNum(t.qty)}주`:'-'}</td><td>-</td><td>${a?`${a>=0?'+':''}${fmt(a)}`:'-'}</td><td><span class="history-note">${esc(t.reason||t.detail||'-')}</span></td></tr>`}const memo=t.comment?esc(t.comment):'<span class="muted">메모 없음</span>',fee=Number(t.fee||0);return`<tr><td>${new Date(t.at).toLocaleString('ko-KR')}</td><td><b>${esc(t.name||t.code)}</b><br><small>${esc(t.code||'')}</small></td><td class="${t.side==='BUY'?'up':'down'}"><b>${t.side==='BUY'?'매수':'매도'}</b></td><td>${fmtNum(t.qty)}주</td><td>${txPrice(t)}${t.quoteAsOfDate?`<br><small>기준일 ${esc(dateKo(t.quoteAsOfDate))}</small>`:''}</td><td>${fmt(t.amount)}${fee?`<br><small>수수료 ${fmt(fee)}</small>`:''}</td><td><span class="history-note">${memo}</span><br><button class="mini-note edit-comment" data-id="${esc(t.id)}">메모 ${t.comment?'수정':'남기기'}</button></td></tr>`}).join(''):'<tr><td colspan="7" class="table-empty-cell">기록이 없습니다.</td></tr>';document.querySelectorAll('.edit-comment').forEach(b=>b.onclick=()=>editTradeComment(b.dataset.id))}
 function renderHistoryCards(){if(!state||!$('#historyCards'))return;const tx=state.transactions||[];$('#historyCards').innerHTML=tx.length?tx.map(t=>{if(t.type==='TEACHER'){const a=Number(t.signedAmount||0);return`<article class="history-card"><div class="history-card-top"><div><div class="history-card-title">교사 지급·차감</div><div class="history-card-meta">${new Date(t.at).toLocaleString('ko-KR')} · ${esc(t.teacherName||'교사')}</div></div><div class="history-card-amount ${a>=0?'up':'down'}">${a>=0?'+':''}${fmt(a)}</div></div><div class="history-card-note">${esc(t.reason||'-')}</div></article>`}if(t.type==='CORPORATE'){const a=Number(t.signedAmount||0);return`<article class="history-card"><div class="history-card-top"><div><div class="history-card-title">${esc(t.name||t.code)} · 기업행동</div><div class="history-card-meta">${new Date(t.at).toLocaleString('ko-KR')} · ${esc(t.side||'')}</div></div><div class="history-card-amount">${a?`${a>=0?'+':''}${fmt(a)}`:'-'}</div></div><div class="history-card-note">${esc(t.reason||t.detail||'-')}</div></article>`}const amount=Number(t.amount||0),memo=t.comment?esc(t.comment):'메모 없음';return`<article class="history-card"><div class="history-card-top"><div><div class="history-card-title">${esc(t.name||t.code)} · ${t.side==='BUY'?'매수':'매도'}</div><div class="history-card-meta">${new Date(t.at).toLocaleString('ko-KR')} · ${fmtNum(t.qty)}주 × ${txPrice(t)}</div></div><div class="history-card-amount ${t.side==='BUY'?'up':'down'}">${fmt(amount)}</div></div><div class="history-card-note">${memo}${Number(t.fee||0)?` · 수수료 ${fmt(t.fee)}`:''}<br><button class="mini-note edit-comment-mobile" data-id="${esc(t.id)}">메모 ${t.comment?'수정':'남기기'}</button></div></article>`}).join(''):'<div class="compact-empty">기록이 없습니다.</div>';document.querySelectorAll('.edit-comment-mobile').forEach(b=>b.onclick=()=>editTradeComment(b.dataset.id))}
-async function editTradeComment(id){if(!state)return;const tx=(state.transactions||[]).find(t=>t.id===id&&t.type==='TRADE');if(!tx)return toast('거래 기록을 찾을 수 없습니다.');const value=prompt('이 거래에 남길 짧은 메모를 입력하세요. (최대 80자)\n빈칸으로 저장하면 메모가 삭제됩니다.',tx.comment||'');if(value===null)return;try{const d=await api('/api/transaction/comment',{method:'POST',body:JSON.stringify({transactionId:id,comment:value.slice(0,80)})});state=d.state;renderHistory();renderHistoryCards();toast('거래 메모를 저장했습니다.')}catch(e){toast(e.message)}}
+async function editTradeComment(id){if(!state)return;const tx=(state.transactions||[]).find(t=>t.id===id&&t.type==='TRADE');if(!tx)return toast('거래 기록을 찾을 수 없습니다.');const value=prompt('이 거래에 남길 짧은 메모를 입력하세요. (최대 80자)\n빈칸으로 저장하면 메모가 삭제됩니다.',tx.comment||'');if(value===null)return;try{const d=await api('/api/transaction/comment',{method:'POST',body:JSON.stringify({transactionId:id,comment:value.slice(0,80)})});acceptStudentState(d.state);renderHistory();renderHistoryCards();toast('거래 메모를 저장했습니다.')}catch(e){toast(e.message)}}
 function renderAll(){renderStats();renderHome();renderMarket();renderPortfolio();renderHistory();renderHistoryCards()}
 
 function loadCsLogin(){
@@ -102,12 +116,13 @@ function prefillLogin(){
   $('#welcome').classList.remove('hidden');
 }
 function showApp(){$('#welcome').classList.add('hidden');$('#app').classList.remove('hidden');renderAll();refreshHeldQuotes();clearInterval(quoteTimer);quoteTimer=setInterval(refreshHeldQuotes,300000);startPolling()}
-function logout(){const dialog=$('#tradeDialog');if(dialog?.open)dialog.close();tradeDialogGeneration++;dailyChartFetchId++;accessToken=null;refreshToken='';localStorage.removeItem('cs_refresh');state=null;studentInfo=null;selectedCode=null;clearInterval(pollTimer);clearInterval(quoteTimer);prefillLogin()}
+function logout(){sessionGeneration++;refreshPromise=null;const dialog=$('#tradeDialog');if(dialog?.open)dialog.close();tradeDialogGeneration++;dailyChartFetchId++;accessToken=null;refreshToken='';localStorage.removeItem('cs_refresh');state=null;studentInfo=null;selectedCode=null;clearInterval(pollTimer);clearInterval(quoteTimer);prefillLogin()}
 function startPolling(){clearInterval(pollTimer);pollTimer=setInterval(()=>{if(state)refreshMe().catch(e=>console.warn(e.message))},20000)}
-async function refreshMe(){const d=await api('/api/me');state=d.state;studentInfo={...studentInfo,classCode:d.classCode,nickname:d.nickname};if(d.appliedActions?.some(a=>a.affected))toast('기업행동이 반영되었습니다.');renderAll()}
+async function refreshMe(){const d=await api('/api/me');if(!acceptStudentState(d.state))return;studentInfo={...studentInfo,classCode:d.classCode,nickname:d.nickname};if(d.appliedActions?.some(a=>a.affected))toast('기업행동이 반영되었습니다.');renderAll()}
 async function refreshHeldQuotes(){if(!state)return;const codes=Object.keys(state.holdings||{});if(!$('#search').value.trim())codes.push(...(config.popular||[]).map(x=>x.code));await refreshQuotes(codes)}
 
 async function join(){
+  if($('#joinBtn').disabled)return;
   const classCode=$('#classCode').value.normalize('NFKC').trim().toUpperCase();
   const nickname=$('#nickname').value.normalize('NFC').trim();
   const pin=$('#pin').value.normalize('NFKC').trim();
@@ -115,6 +130,7 @@ async function join(){
   if(!nickname)return toast('닉네임을 입력하세요.');
   if(/\d{3,}/.test(nickname))return toast('닉네임에 3자리 이상 연속 숫자를 넣을 수 없어요. (개인정보 보호)');
   if(!/^\d{4}$/.test(pin))return toast('PIN은 숫자 4자리입니다.');
+  sessionGeneration++;refreshPromise=null;
   const btn=$('#joinBtn');btn.disabled=true;btn.textContent='확인 중...';
   try{
     const d=await api('/api/auth/join',{method:'POST',body:JSON.stringify({classCode,nickname,pin})});
@@ -285,7 +301,7 @@ async function submitTrade(){
   b.disabled=true;b.textContent='기준가격 확인 중...';
   try{
     const d=await api('/api/trade',{method:'POST',body:JSON.stringify({side,code,qty,comment})});
-    state=d.state;priceMap.set(code,{...(priceMap.get(code)||{}),code,price:d.execution.price,updatedAt:Date.now(),source:d.execution.source});renderAll();
+    acceptStudentState(d.state);priceMap.set(code,{...(priceMap.get(code)||{}),code,price:d.execution.price,updatedAt:Date.now(),source:d.execution.source});renderAll();
     if(selectedCode===code&&tradeDialogGeneration===dialogGeneration&&$('#tradeDialog').open)$('#tradeDialog').close();
     toast(`${d.execution.name} ${qty}주 ${side==='BUY'?'매수':'매도'} 완료 · 수수료 ${fmt(d.execution.fee)}`);
   }catch(e){toast(e.message)}
@@ -293,6 +309,7 @@ async function submitTrade(){
 }
 
 async function init(){
+  const generation=sessionGeneration;
   config=await api('/api/config');
   for(const s of config.popular||[])stockCache.set(s.code,s);
   $('#marketMode').textContent='공식 지연 시세';
@@ -302,14 +319,17 @@ async function init(){
   $('#priceStatus').textContent=`국내 ${Number(config.universe.count||0).toLocaleString()}개 종목 검색 가능 · 공공데이터 ${config?.marketData?.kr?.asOfDate?dateKo(config.marketData.kr.asOfDate):'준비 중'} · ${refreshLabel} 새 자료 확인 · 수수료 ${(Number(config.tradeFeeRate||0)*100).toFixed(3)}%`;
   renderMarket();
   await searchStocks();
+  if(generation!==sessionGeneration)return;
 
   if(refreshToken){
     const cached=loadCsLogin();
     if(cached)studentInfo={classCode:cached.classCode,className:cached.className,nickname:cached.nickname};
-    const ok=await tryRefresh().catch(()=>false);
+    const ok=await tryRefresh();
+    if(generation!==sessionGeneration)return;
     if(ok){
-      try{await refreshMe();showApp();return}catch{}
+      await refreshMe();if(generation!==sessionGeneration)return;showApp();return
     }
+    if(generation!==sessionGeneration)return;
     refreshToken='';accessToken=null;localStorage.removeItem('cs_refresh');
   }
   prefillLogin();

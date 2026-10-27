@@ -847,6 +847,7 @@ const server=http.createServer(async(req,res)=>{
             if(cLocked.status==='CANCELLED') throw Object.assign(new Error('이미 취소된 명령입니다.'),{status:400});
             if(cLocked.reversed_by) throw Object.assign(new Error('이미 취소(반대 거래) 처리된 명령입니다.'),{status:400});
             reason='취소: '+cLocked.reason; amount=-Number(cLocked.applied_amount);
+            if(amount<0&&Number(state.cash||0)<-amount)throw Object.assign(new Error('지급액 전부를 회수할 현금이 부족해 취소하지 않았습니다. 학생이 현금을 확보한 뒤 다시 시도하세요.'),{status:409});
             const {next,results:r}=applyTeacherCommands(state,[{id:reversalId,amount,reason,createdByName:actor.name}]);
             appliedAmount=r[0].appliedAmount; appliedAt=r[0].appliedAt;
             // 원본 명령의 reversed_by 갱신까지 같은 트랜잭션에 묶어, 크래시로 상태만 롤백되고
@@ -879,7 +880,13 @@ const server=http.createServer(async(req,res)=>{
         const b=await readJson(req,16384); const pin=String(b.pin||'');
         if(!/^\d{4}$/.test(pin)) return sendJson(res,400,{error:'PIN은 숫자 4자리입니다.'});
         const pinScrypt=await scryptHash(pin);
-        await db.query('UPDATE students SET pin_scrypt=$2, token_epoch=token_epoch+1, updated_at=now() WHERE id=$1',[studentId, pinScrypt]);
+        await db.withTransaction(async client=>{
+          const updated=await client.query('UPDATE students SET pin_scrypt=$2, token_epoch=token_epoch+1, updated_at=now() WHERE id=$1 RETURNING class_code,nickname',[studentId,pinScrypt]);
+          if(!updated.rows.length)throw Object.assign(new Error('학생 계정을 찾을 수 없습니다.'),{status:404});
+          const row=updated.rows[0];
+          const accountHash=lockoutHash('student',row.class_code+':'+row.nickname.normalize('NFC').trim());
+          await client.query('DELETE FROM login_lockouts WHERE scope=$1 AND account_hash=$2',['student',accountHash]);
+        });
         await db.audit('STUDENT_PIN_RESET', actor, {studentId});
         return sendJson(res,200,{ok:true});
       }
@@ -917,7 +924,8 @@ const server=http.createServer(async(req,res)=>{
         const changesCode=['CODE_CHANGE','MERGER'].includes(type),oldCode=resolveStockCode(oldInput),newCode=changesCode?resolveStockCode(newInput):oldCode;
         if(!types.has(type)||!oldCode||!getStock(oldCode)) return sendJson(res,400,{error:'기업행동 유형과 국내 6자리 종목코드를 확인하세요.'});
         if(changesCode&&(!newCode||!getStock(newCode))) return sendJson(res,400,{error:'변경/합병 후 국내 6자리 종목코드를 현재 종목 목록에서 확인하세요.'});
-        const ratioNum=Number(b.ratioNum||1),ratioDen=Number(b.ratioDen||1),settlementPrice=Math.max(0,Number(b.settlementPrice||0)),cashPerOldShare=Math.max(0,Math.trunc(Number(b.cashPerOldShare||0)));
+        const ratioNum=Number(b.ratioNum??1),ratioDen=Number(b.ratioDen??1),settlementPrice=Number(b.settlementPrice??0),cashPerOldShare=Number(b.cashPerOldShare??0);
+        if(![ratioNum,ratioDen,settlementPrice,cashPerOldShare].every(Number.isFinite)||ratioNum<=0||ratioDen<=0||settlementPrice<0||!Number.isSafeInteger(cashPerOldShare)||cashPerOldShare<0)return sendJson(res,400,{error:'기업행동 비율과 정산 금액을 확인하세요.'});
         if(['SPLIT','REVERSE_SPLIT','CODE_CHANGE','MERGER'].includes(type)&&(!(ratioNum>0)||!(ratioDen>0))) return sendJson(res,400,{error:'교환비율을 확인하세요.'});
         const oldStock=getStock(oldCode),newStock=getStock(newCode); const action=await db.addCorporateAction({type,oldCode,newCode,oldName:safeStr(b.oldName,80)||oldStock?.name||'',newName:safeStr(b.newName,80)||newStock?.name||oldStock?.name||'',ratioNum,ratioDen,settlementPrice,cashPerOldShare,effectiveDate:safeStr(b.effectiveDate,10)||new Date().toISOString().slice(0,10),note:safeStr(b.note,200),source:'MANUAL',status:'ACTIVE'},actor);
         return sendJson(res,200,{action});
@@ -928,7 +936,7 @@ const server=http.createServer(async(req,res)=>{
         const existing=db.getCorporateAction(caMatch[1]);
         if(!existing||!domesticCorporateActions([existing]).length)return sendJson(res,404,{error:'국내 기업행동 기록을 찾을 수 없습니다.'});
         const b=await readJson(req,50000); const patch={};
-        if(['ACTIVE','PENDING_REVIEW','DISABLED'].includes(String(b.status||'')))patch.status=String(b.status); for(const k of ['settlementPrice','cashPerOldShare','ratioNum','ratioDen'])if(k in b)patch[k]=k==='cashPerOldShare'?Math.max(0,Math.trunc(Number(b[k]||0))):Math.max(0,Number(b[k]||0)); if('newCode'in b){const raw=safeStr(b.newCode,50),resolved=resolveStockCode(raw);if(!/^\d{6}$/.test(resolved)||!getStock(resolved))return sendJson(res,400,{error:'국내 6자리 종목코드를 확인하세요.'});patch.newCode=resolved;} if('newName'in b)patch.newName=safeStr(b.newName,80); if('note'in b)patch.note=safeStr(b.note,200);
+        if(['ACTIVE','PENDING_REVIEW','DISABLED'].includes(String(b.status||'')))patch.status=String(b.status); for(const k of ['settlementPrice','cashPerOldShare','ratioNum','ratioDen'])if(k in b){const value=Number(b[k]);if(!Number.isFinite(value)||value<0||(['ratioNum','ratioDen'].includes(k)&&value===0)||(k==='cashPerOldShare'&&!Number.isSafeInteger(value)))return sendJson(res,400,{error:'기업행동 비율과 정산 금액을 확인하세요.'});patch[k]=value;} if('newCode'in b){const raw=safeStr(b.newCode,50),resolved=resolveStockCode(raw);if(!/^\d{6}$/.test(resolved)||!getStock(resolved))return sendJson(res,400,{error:'국내 6자리 종목코드를 확인하세요.'});patch.newCode=resolved;} if('newName'in b)patch.newName=safeStr(b.newName,80); if('note'in b)patch.note=safeStr(b.note,200);
         return sendJson(res,200,{action:await db.updateCorporateAction(caMatch[1],patch,actor)});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/teachers'){
@@ -1066,7 +1074,7 @@ async function initDbWithRetry(){
 
 async function main(){
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.3.1: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.3.2: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (하루 1회 확인)');

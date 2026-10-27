@@ -99,6 +99,27 @@ try{
   assert.equal((await call('/api/admin/classes/CHECK1',{initialCash:-1},admin.token)).status,400);
   assert.equal((await call('/api/teacher/command',{...payload,amount:0.5,requestId:crypto.randomUUID()},admin.token)).status,400);
   console.log('PASS: cross-class authorization, teacher reassignment revokes stale token, invalid money rejected');
+  const commandId=both[0].results.find(r=>r.studentId===a.studentId).commandId;
+  await pool.query("UPDATE students SET state=jsonb_set(state,'{cash}','0') WHERE id=$1",[a.studentId]);
+  assert.equal((await call(`/api/teacher/commands/${commandId}/cancel`,{},admin.token)).status,409,'Insufficient cash must not permanently mark a partial reversal complete');
+  assert.equal((await pool.query('SELECT reversed_by FROM teacher_commands WHERE id=$1',[commandId])).rows[0].reversed_by,null);
+  await pool.query("UPDATE students SET state=jsonb_set(state,'{cash}','500000') WHERE id=$1",[a.studentId]);
+  const reversals=await Promise.all([call(`/api/teacher/commands/${commandId}/cancel`,{},admin.token),call(`/api/teacher/commands/${commandId}/cancel`,{},admin.token)]);
+  assert.deepEqual(reversals.map(r=>r.status).sort(),[200,400]);
+  assert.equal((await call('/api/me',null,a.accessToken)).state.cash,0);
+  console.log('PASS: insufficient-cash cancellation leaves original intact; concurrent cancellation reverses once');
+  for(let i=0;i<10;i++)await call('/api/auth/join',{classCode:'CHECK1',nickname:'늦은학생',pin:'9999'});
+  assert.equal((await call('/api/auth/join',{classCode:'CHECK1',nickname:'늦은학생',pin:'0123'})).status,423);
+  assert.equal((await call(`/api/teacher/student/${late.studentId}/reset-pin`,{pin:'6789'},admin.token)).status,200);
+  const unlocked=await call('/api/auth/join',{classCode:'CHECK1',nickname:'늦은학생',pin:'6789'});
+  assert.equal(unlocked.status,200,'Teacher PIN reset must release the existing login lockout');
+  assert.equal(unlocked.studentId,late.studentId);
+  assert.equal((await call('/api/me',null,late.accessToken)).status,401);
+  console.log('PASS: PIN reset releases lockout and invalidates old sessions');
+  for(const invalid of [{ratioNum:'Infinity'},{ratioDen:0},{settlementPrice:'oops'},{cashPerOldShare:0.5}]){
+    assert.equal((await call('/api/admin/corporate-actions',{type:'SPLIT',oldCode:'005930',...invalid},admin.token)).status,400);
+  }
+  console.log('PASS: invalid corporate action ratios and cash rejected');
 }finally{
   const stopped=new Promise(r=>child.once('exit',r));child.kill();await stopped;
   await pool.end();await root.query(`DROP SCHEMA ${schema} CASCADE`);await root.end();

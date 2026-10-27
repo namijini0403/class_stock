@@ -34,6 +34,8 @@ async function main() {
 
   // 3) 만료된 토큰 → null / 남은시간 0
   const expired = signToken({ sid: 'x' }, -10);
+  if (verifyToken(signToken({ sid: 'x' }, 0)) !== null) fail('만료 시각에 도달한 토큰이 허용됨');
+  if (verifyToken(signToken({ sid: 'x' }, NaN)) !== null) fail('유효한 만료 시각이 없는 토큰이 허용됨');
   if (verifyToken(expired) !== null) fail('만료 토큰이 거부되지 않음');
   if (tokenRemainingSeconds(expired) !== 0) fail('만료 토큰의 남은시간이 0이 아님');
 
