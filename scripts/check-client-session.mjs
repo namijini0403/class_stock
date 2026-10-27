@@ -34,3 +34,7 @@ await assert.rejects(vm.runInContext("api('/api/me')",context));
 assert.equal(vm.runInContext('refreshToken',context),'saved-refresh','Transient refresh failure must preserve login');
 assert.equal(vm.runInContext('state.cash',context),200);
 console.log('PASS: stale polling, account-switch 401, logout race, transient refresh outage');
+assert.equal(vm.runInContext('quoteTotal({usdMicros:100250000,fxMicros:1387123456},2)',context),278118);
+assert.equal(vm.runInContext("marketMatch({market:'US'},'KR')",context),false);
+assert.equal(vm.runInContext("marketKo('US')",context),'미국');
+assert.match(vm.runInContext('pricePrimary({price:139059,usdMicros:100250000})',context),/\$100.25/);

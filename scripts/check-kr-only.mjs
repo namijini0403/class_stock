@@ -735,10 +735,10 @@ assert.ok(serverSource.includes('marketData.dailyChart(stock,{period})'), '일�
 assert.ok(serverSource.includes("periodBasis:'calendar-period'"), '일봉 조회 기간이 달력 월·년 기준임을 응답에 밝혀야 합니다.');
 assert.ok(serverSource.includes("url.searchParams.has('days')") && serverSource.includes("url.searchParams.get('period')"), '옛 days 계약은 거부하고 period 화이트리스트만 받아야 합니다.');
 assert.ok(serverSource.includes('domesticCorporateActions'), '기업행동은 국내 6자리 코드 허용목록을 거쳐야 합니다.');
-assert.ok((serverSource.match(/domesticStateView\(/g) || []).length >= 2, '학생 응답과 교사 자산 요약은 국내 상태 보기만 사용해야 합니다.');
+assert.ok((serverSource.match(/accountStateView\(/g) || []).length >= 2, '학생 응답과 교사 자산 요약은 국내 상태 보기만 사용해야 합니다.');
 assert.ok(serverSource.includes('if(row) state=(await withStudentState(id,epo,null)).state;'), '기존 학생 로그인 응답도 국내 상태 보기를 사용해야 합니다.');
-assert.ok(serverSource.includes('state=domesticStateView(state);'), '신규·기존 학생 로그인 응답에 같은 국내 상태 보기를 적용해야 합니다.');
-assert.ok(serverSource.includes('if(!isDomesticTransaction(tx))'), '숨겨진 비국내 거래 기록의 메모를 수정할 수 없어야 합니다.');
+assert.ok(serverSource.includes('state=accountStateView(state);'), '신규·기존 학생 로그인 응답에 같은 국내 상태 보기를 적용해야 합니다.');
+assert.ok(serverSource.includes('if(!supportedTransaction(tx))'), '숨겨진 비국내 거래 기록의 메모를 수정할 수 없어야 합니다.');
 assert.ok(serverSource.includes('newCode=changesCode?resolveStockCode(newInput):oldCode'), '코드변경·합병 외 기업행동은 신규 코드를 기존 국내 코드로 고정해야 합니다.');
 assert.ok(serverSource.includes('domesticCorporateActions(db.listCorporateActions({limit:Number.MAX_SAFE_INTEGER})).slice(0,500)'), '기업행동은 국내 필터 후 목록 상한을 적용해야 합니다.');
 assert.ok(serverSource.includes('db.getCorporateAction(caMatch[1])'), '기업행동 수정은 목록 상한과 무관하게 ID로 직접 조회해야 합니다.');

@@ -4,7 +4,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { StockUniverse } = require('./lib/universe');
 const { MarketDataService, KR_ATTRIBUTION, MARKET_RETRY_MS, HISTORY_PERIODS, DEFAULT_HISTORY_PERIOD, historyRange } = require('./lib/market-data');
-const { isDomesticCode, isDomesticTransaction, domesticCorporateActions, domesticStateView } = require('./lib/domestic');
+const { isDomesticCode, domesticCorporateActions } = require('./lib/domestic');
+const { STOCKS:US_STOCKS, usStock, supportedTransaction, accountStateView, krwTotal, UsMarket } = require('./lib/us-market');
 const { msUntilNextKstRefresh, shouldForceInitialKstRefresh } = require('./lib/daily-refresh');
 
 const ROOT = __dirname;
@@ -139,6 +140,7 @@ const POPULAR_CODES = ['005930','000660','035420','035720','005380','000270','00
 
 const universe = new StockUniverse(path.join(DATA_DIR, 'stock-universe.json'), FALLBACK);
 const marketData = new MarketDataService({dataDir:DATA_DIR,universe,serviceKey:PUBLIC_DATA_SERVICE_KEY,recordEvents:recordUniverseEvents});
+const usMarket = new UsMarket({db});
 const prices = new Map();
 const quoteInflight = new Map();
 const newsCache = new Map();
@@ -257,20 +259,22 @@ function getStudentAuth(req) {
   if (!p || p.typ || !p.sid) return null;
   return { sid: p.sid, cls: p.cls, epo: Number(p.epo || 0) };
 }
-function getStock(code) { return universe.lookup(code) || FALLBACK.find(s=>s.code===code) || null; }
+function getStock(code) { return usStock(code) || universe.lookup(code) || FALLBACK.find(s=>s.code===code) || null; }
 function resolveStockCode(input){ const raw=safeStr(input,50); return isDomesticCode(raw)?(universe.resolveCode(raw)||(getStock(raw)?raw:'')):''; }
 function tradeFeeRate(){ return Math.min(0.01, Math.max(0, Number(db.getSetting('tradeFeeRate', DEFAULT_TRADE_FEE_RATE)))); }
 function calcFee(amount){ return Math.max(0, Math.ceil(Number(amount||0) * tradeFeeRate())); }
 function corporateTradeBlockReason(code){let halted=false,removed=false,hardBlocked='';for(const a of domesticCorporateActions(db.getEffectiveCorporateActions())){if(String(a.oldCode)!==String(code))continue;if(a.type==='HALT')halted=true;else if(a.type==='RESUME')halted=false;else if(a.type==='REMOVED')removed=true;else if(a.type==='RESTORED')removed=false;else if(a.type==='DELIST')hardBlocked='상장폐지된 종목입니다.';else if(['CODE_CHANGE','MERGER'].includes(a.type))hardBlocked='기업행동으로 기존 종목 거래가 종료되었습니다.';}return hardBlocked||(removed?'상장 종목 목록에서 제외된 종목입니다.':'')||(halted?'현재 거래정지 종목입니다.':'');}
-function stockTradeBlockReason(stock){ if(!stock) return '종목을 찾을 수 없습니다.'; const actionBlock=corporateTradeBlockReason(stock.code); if(actionBlock)return actionBlock; if(stock.active===false) return '현재 상장 종목 목록에서 제외되어 거래할 수 없습니다.'; if(stock.tradingHalt) return '현재 거래정지 종목입니다.'; if(stock.liquidation) return '정리매매 종목은 이 교육용 프로그램에서 거래할 수 없습니다.'; return ''; }
+function stockTradeBlockReason(stock){ if(!stock) return '종목을 찾을 수 없습니다.'; if(usStock(stock.code)){try{usMarket.tradeQuote(stock.code);return ''}catch(e){return e.message}} const actionBlock=corporateTradeBlockReason(stock.code); if(actionBlock)return actionBlock; if(stock.active===false) return '현재 상장 종목 목록에서 제외되어 거래할 수 없습니다.'; if(stock.tradingHalt) return '현재 거래정지 종목입니다.'; if(stock.liquidation) return '정리매매 종목은 이 교육용 프로그램에서 거래할 수 없습니다.'; return ''; }
 function stockView(stock){if(!stock)return null;return {...stock,tradeBlockedReason:stockTradeBlockReason(stock)};}
 async function quoteFor(code, {force=false}={}) {
   const stock=getStock(code); if(!stock) throw new Error('종목을 찾을 수 없습니다.');
+  if(usStock(code))return usMarket.quote(code);
   if(stock.active===false) return {code,name:stock.name,market:stock.market,price:0,change:0,changeRate:0,updatedAt:Date.now(),source:'inactive',sourceLabel:'상장 종목 목록에서 제외됨',active:false,tradingHalt:true,status:'REMOVED'};
   if(force || marketData.kr.size===0) await marketData.refreshKr(force);
   const q=marketData.quote(stock); if(q?.price>0){prices.set(code,q);quoteFetchCount++;} return q;
 }
 async function quoteForTrade(code) {
+  if(usStock(code))return usMarket.tradeQuote(code);
   const stock=getStock(code); if(!stock) throw new Error('종목을 찾을 수 없습니다.');
   const q=await quoteFor(code,{force:false});
   if(!q||!q.price) throw new Error('국내 공공데이터 기준가격이 아직 준비되지 않았습니다. 공공데이터 서비스키와 갱신 상태를 확인하세요.');
@@ -331,7 +335,7 @@ function applyTrade(state, side, code, qty, quote, comment = '') {
   const stock=getStock(code); if(!stock) throw new Error('종목을 찾을 수 없습니다.');
   const blocked=stockTradeBlockReason(stock); if(blocked) throw new Error(blocked);
   const next=structuredClone(state); if(!next.holdings) next.holdings={}; if(!Array.isArray(next.transactions)) next.transactions=[];
-  const gross=price*qty, fee=calcFee(gross), cur=next.holdings[code]||{qty:0,avgPrice:0};
+  const gross=usStock(code)?krwTotal(quote.usdMicros,quote.fxMicros,qty):price*qty, fee=calcFee(gross), cur=next.holdings[code]||{qty:0,avgPrice:0};
   if(cur.status && cur.status!=='ACTIVE') throw new Error('이 보유주식은 현재 거래할 수 없는 상태입니다.');
   let netAmount;
   if(side==='BUY'){
@@ -344,7 +348,7 @@ function applyTrade(state, side, code, qty, quote, comment = '') {
     const remain=Number(cur.qty||0)-qty; if(remain===0) delete next.holdings[code]; else next.holdings[code]={qty:remain,avgPrice:Number(cur.avgPrice||0),name:stock.name,status:'ACTIVE'}; netAmount=proceeds;
   } else throw new Error('거래 유형이 올바르지 않습니다.');
   next.totalFees=Number(next.totalFees||0)+fee;
-  next.transactions.unshift({id:crypto.randomUUID(),type:'TRADE',at:new Date().toISOString(),side,code,name:stock.name,market:stock.market,qty,price,amount:gross,grossAmount:gross,fee,feeRate:tradeFeeRate(),netAmount,comment:safeStr(comment,80),quoteSource:quote.source||'',quoteSourceLabel:quote.sourceLabel||'',quoteAsOfDate:quote.asOfDate||''});
+  next.transactions.unshift({id:crypto.randomUUID(),type:'TRADE',at:new Date().toISOString(),side,code,name:stock.name,market:stock.market,qty,price,amount:gross,grossAmount:gross,fee,feeRate:tradeFeeRate(),netAmount,comment:safeStr(comment,80),quoteSource:quote.source||'',quoteSourceLabel:quote.sourceLabel||'',quoteAsOfDate:quote.asOfDate||'',...(usStock(code)?{usdMicros:quote.usdMicros,fxMicros:quote.fxMicros,fxAsOfDate:quote.fxAsOfDate,snapshotId:quote.snapshotId}:{})});
   if(next.transactions.length>1500) next.transactions.length=1500;
   next.version=Number(next.version||0)+1; next.updatedAt=new Date().toISOString(); next.schema=Math.max(3,Number(next.schema||1));
   return {next,fee,gross,netAmount};
@@ -436,16 +440,17 @@ async function withStudentState(sid, expectedEpoch, fn) {
     // 1) 지연 적용 기업행동 (applyCorporateActions 그대로 재사용)
     const ca = applyCorporateActions(state, domesticCorporateActions(db.getEffectiveCorporateActions()));
     if (ca.applied.length) state = ca.next;
+    const usActions=usMarket.applyActions(state);state=usActions.next;
     // 2) 호출자 mutation (fn이 null이면 읽기/새로고침)
     const out = fn ? await fn(state, client) : { state };
     state = out.state;
     // 최적화: 기업행동도 없고 fn도 없었으면(순수 읽기) UPDATE를 건너뛴다.
-    if (fn || ca.applied.length) {
+    if (fn || ca.applied.length || usActions.changed) {
       await client.query(
         'UPDATE students SET state=$2, state_version=state_version+1, updated_at=now() WHERE id=$1',
         [sid, JSON.stringify(state)]);
     }
-    return { state: domesticStateView(state), row, appliedActions: ca.applied, warnings: ca.warnings, extra: out.extra };
+    return { state: accountStateView(state), row, appliedActions: ca.applied, warnings: ca.warnings, extra: out.extra };
   });
 }
 
@@ -457,7 +462,7 @@ async function withStudentState(sid, expectedEpoch, fn) {
  * 설정과는 별개(설정 변경은 신규 가입자에게만 적용됨).
  */
 function summarizeState(state) {
-  state = domesticStateView(state);
+  state = accountStateView(state);
   const cash = Number(state.cash || 0);
   const holdings = state.holdings || {};
   const codes = Object.keys(holdings);
@@ -467,11 +472,12 @@ function summarizeState(state) {
     let price;
     if (h.status === 'DELISTED' || h.status === 'REMOVED') price = Number(h.valuationPrice || 0);
     else {
-      const quoted = Number(marketData.quote(getStock(code))?.price || 0);
+      const quoted = Number((usStock(code)?usMarket.quote(code):marketData.quote(getStock(code)))?.price || 0);
       if (!(quoted > 0)) missingQuotes++;
       price = quoted > 0 ? quoted : Number(h.valuationPrice || h.avgPrice || 0);
     }
-    holdingsValue += price * Number(h.qty || 0);
+    const usQuote=usStock(code)?usMarket.quote(code):null;
+    holdingsValue += usQuote?.price?krwTotal(usQuote.usdMicros,usQuote.fxMicros,Number(h.qty||0)):price * Number(h.qty || 0);
   }
   holdingsValue = Math.round(holdingsValue); // 금액은 항상 원화 정수
   const holdingsCount = codes.length;
@@ -534,18 +540,18 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==='GET'&&url.pathname==='/api/health'){
       const dbOk=await dbPingOk();
       const hc=dbOk?await healthCounts():healthCountsCache;
-      return sendJson(res,dbOk?200:503,{ok:dbOk,db:dbOk,mode:'OFFICIAL_DELAYED_KR',requestCount,tradeCount,rejectedTradeCount,quoteFetchCount,newsFetchCount,universeCount:universe.stocks.length,retiredCount:universe.retired.size,universeSource:universe.source,marketData:marketData.status(),marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,tradeFeeRate:tradeFeeRate(),corporateActions:hc.corporateActions,students:hc.students,uptimeSec:Math.round(process.uptime())});
+      return sendJson(res,dbOk?200:503,{ok:dbOk,db:dbOk,mode:'OFFICIAL_DELAYED_KR',requestCount,tradeCount,rejectedTradeCount,quoteFetchCount,newsFetchCount,universeCount:universe.stocks.length,retiredCount:universe.retired.size,universeSource:universe.source,marketData:{...marketData.status(),us:usMarket.status()},marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,tradeFeeRate:tradeFeeRate(),corporateActions:hc.corporateActions,students:hc.students,uptimeSec:Math.round(process.uptime())});
     }
-    if(req.method==='GET'&&url.pathname==='/api/config'){if(marketData.kr.size===0)marketData.refreshKr(false).catch(e=>console.warn('[국내시세] 초기 적재 실패:',e.message));return sendJson(res,200,{initialCash:INITIAL_CASH,mode:'OFFICIAL_DELAYED_KR',marketData:marketData.status(),marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,newsEnabled:true,newsAuto:true,newsProvider:NAVER_ENABLED?'네이버 우선 + 공개뉴스 자동':'공개뉴스 자동',tradeFeeRate:tradeFeeRate(),universe:{count:universe.stocks.length,retiredCount:universe.retired.size,source:universe.source,updatedAt:universe.lastUpdatedAt},popular:POPULAR_CODES.map(getStock).filter(s=>s&&s.active!==false).map(stockView)});}
+    if(req.method==='GET'&&url.pathname==='/api/config'){if(marketData.kr.size===0)marketData.refreshKr(false).catch(e=>console.warn('[국내시세] 초기 적재 실패:',e.message));return sendJson(res,200,{initialCash:INITIAL_CASH,mode:'OFFICIAL_DELAYED_KR',marketData:{...marketData.status(),us:usMarket.status()},marketDataRefreshMs:PUBLIC_DATA_REFRESH_MS,newsEnabled:true,newsAuto:true,newsProvider:NAVER_ENABLED?'네이버 우선 + 공개뉴스 자동':'공개뉴스 자동',tradeFeeRate:tradeFeeRate(),universe:{count:universe.stocks.length,retiredCount:universe.retired.size,source:universe.source,updatedAt:universe.lastUpdatedAt},popular:POPULAR_CODES.map(getStock).filter(s=>s&&s.active!==false).map(stockView)});}
     if(req.method==='GET'&&url.pathname==='/api/stocks'){
       if(!rateLimitOk('stocks:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const limit=Math.min(100,Math.max(1,Number(url.searchParams.get('limit')||50))); const offset=Math.max(0,Number(url.searchParams.get('offset')||0));
-      const r=universe.search(url.searchParams.get('q')||'',{market:url.searchParams.get('market')||'',limit,offset}); return sendJson(res,200,{...r,items:r.items.map(stockView),universeCount:universe.stocks.length});
+      const q=url.searchParams.get('q')||'',market=url.searchParams.get('market')||'';const domestic=universe.search(q,{market,limit:10000,offset:0});const us=(!market||market==='US')?US_STOCKS.filter(s=>(s.name+' '+s.symbol+' '+s.code).toLowerCase().includes(q.toLowerCase().trim())):[];const items=[...domestic.items,...us];const r={items:items.slice(offset,offset+limit),total:items.length,offset,limit}; return sendJson(res,200,{...r,items:r.items.map(stockView),universeCount:universe.stocks.length});
     }
     if(req.method==='GET'&&url.pathname==='/api/stocks/by-codes'){
       if(!rateLimitOk('bycodes:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const codes=String(url.searchParams.get('codes')||'').split(',').map(x=>x.trim()).filter(Boolean).slice(0,80);
-      return sendJson(res,200,{items:universe.byCodes(codes).map(stockView)});
+      return sendJson(res,200,{items:codes.map(getStock).filter(Boolean).map(stockView)});
     }
     if(req.method==='GET'&&url.pathname==='/api/quotes'){
       if(!rateLimitOk('quotes:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
@@ -560,7 +566,7 @@ const server=http.createServer(async(req,res)=>{
       if(!rateLimitOk('chart:ip:'+clientIp(req),120,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       if(!rateLimitOk('chart:global',120,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const code=String(url.searchParams.get('code')||'').trim();
-      if(!/^\d{6}$/.test(code)) return sendJson(res,400,{error:'국내 6자리 종목코드를 확인하세요.'});
+      if(!/^\d{6}$/.test(code)&&!usStock(code)) return sendJson(res,400,{error:'종목코드를 확인하세요.'});
       const stock=getStock(code);
       if(!stock) return sendJson(res,404,{error:'종목을 찾을 수 없습니다.'});
       if(url.searchParams.has('days')) return sendJson(res,400,{error:'조회 기간은 period=1m|3m|6m|1y|3y|5y|10y 중 하나로 입력하세요.'});
@@ -568,6 +574,7 @@ const server=http.createServer(async(req,res)=>{
       if(!Object.prototype.hasOwnProperty.call(HISTORY_PERIODS,period)) return sendJson(res,400,{error:'조회 기간은 period=1m|3m|6m|1y|3y|5y|10y 중 하나로 입력하세요.'});
       const stuR=await db.query('SELECT token_epoch FROM students WHERE id=$1',[auth.sid]);
       if(!stuR.rows[0]||Number(auth.epo||0)!==Number(stuR.rows[0].token_epoch)) return sendJson(res,401,{error:'다시 로그인해 주세요.'});
+      if(usStock(code))return sendJson(res,200,usMarket.chart(code,period));
       const range=historyRange(period);
       try{return sendJson(res,200,await marketData.dailyChart(stock,{period}));}
       catch(e){console.warn('[일별 차트]',code,e.message);const status=e.statusCode===503?503:502;return sendJson(res,status,{error:e.message||'일별 차트를 불러오지 못했습니다.',code,period,months:HISTORY_PERIODS[period],periodBasis:'calendar-period',requestedRangeStart:range.requestedRangeStart,rangeEnd:range.rangeEnd,coverageStart:'',availableFrom:'',partial:false,asOfDate:'',interval:'1d',kind:'daily-ohlcv',timezone:'Asia/Seoul',delayed:true,refreshMs:24*60*60*1000,source:'PUBLIC_DATA_KR',sourceLabel:KR_ATTRIBUTION,cached:false,stale:false,fallbackUsed:false,bars:[]});}
@@ -649,7 +656,7 @@ const server=http.createServer(async(req,res)=>{
       }
 
       if(row) state=(await withStudentState(id,epo,null)).state;
-      state=domesticStateView(state);
+      state=accountStateView(state);
 
       const accessToken=signToken({sid:id, cls:classCode, epo}, 3600);
       const refreshToken=signToken({sid:id, cls:classCode, epo, typ:'refresh'}, 2592000);
@@ -688,6 +695,7 @@ const server=http.createServer(async(req,res)=>{
         const stock=getStock(code),block=stockTradeBlockReason(stock); if(block) throw new Error(block);
         const quote=await quoteForTrade(code); if(!quote||!quote.price) throw new Error('현재 시세를 가져오지 못했습니다.');
         const result=await withStudentState(auth.sid, Number(auth.epo||0), async (state) => {
+          if(usStock(code)&&quote.snapshotId!==usMarket.tradeQuote(code).snapshotId)throw new Error('미국 기준가가 갱신되었습니다. 다시 주문하세요.');
           const r=applyTrade(state,side,code,qty,quote,comment);
           return {state:r.next, extra:r};
         });
@@ -704,7 +712,7 @@ const server=http.createServer(async(req,res)=>{
         const result=await withStudentState(auth.sid, Number(auth.epo||0), async (state) => {
           const next=structuredClone(state); if(!Array.isArray(next.transactions)) next.transactions=[];
           const tx=next.transactions.find(t=>t && t.id===transactionId && t.type==='TRADE'); if(!tx) throw new Error('수정할 거래 기록을 찾을 수 없습니다.');
-          if(!isDomesticTransaction(tx)) throw new Error('수정할 국내 거래 기록을 찾을 수 없습니다.');
+          if(!supportedTransaction(tx)) throw new Error('수정할 거래 기록을 찾을 수 없습니다.');
           tx.comment=comment; tx.commentUpdatedAt=new Date().toISOString(); next.version=Number(next.version||0)+1; next.updatedAt=new Date().toISOString(); next.schema=Math.max(3,Number(next.schema||1));
           return {state:next};
         });
@@ -772,7 +780,7 @@ const server=http.createServer(async(req,res)=>{
         const cls=clsR.rows[0]; if(!cls) return sendJson(res,404,{error:'학급을 찾을 수 없습니다.'});
         const r=await db.query('SELECT id, nickname, state, updated_at FROM students WHERE class_code=$1 ORDER BY nickname',[classCode]);
         const effectiveActions=domesticCorporateActions(db.getEffectiveCorporateActions());
-        const students=r.rows.map(s=>({studentId:s.id,nickname:s.nickname,updatedAt:s.updated_at,...summarizeState(applyCorporateActions(s.state,effectiveActions).next)}));
+        const students=r.rows.map(s=>({studentId:s.id,nickname:s.nickname,updatedAt:s.updated_at,...summarizeState(usMarket.applyActions(applyCorporateActions(s.state,effectiveActions).next).next)}));
         await db.audit('ROSTER_VIEW', actor, {classCode});
         return sendJson(res,200,{actor,classCode,className:cls.name,initialCash:cls.initial_cash===null?null:Number(cls.initial_cash),students});
       }
@@ -902,10 +910,10 @@ const server=http.createServer(async(req,res)=>{
         return sendJson(res,200,{ok:true});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/market-data'){
-        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); return sendJson(res,200,{marketData:marketData.status(),universe:{count:universe.stocks.length,source:universe.source,updatedAt:universe.lastUpdatedAt}});
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); return sendJson(res,200,{marketData:{...marketData.status(),us:usMarket.status()},universe:{count:universe.stocks.length,source:universe.source,updatedAt:universe.lastUpdatedAt}});
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/market-data/refresh-kr'){
-        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const r=await marketData.refreshKr(true); if(!r.error){prices.clear();marketData.invalidateHistoryCache();} return sendJson(res,200,{marketData:marketData.status()});
+        if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const r=await marketData.refreshKr(true); if(!r.error){prices.clear();marketData.invalidateHistoryCache();} return sendJson(res,200,{marketData:{...marketData.status(),us:usMarket.status()}});
       }
       if(req.method==='GET'&&url.pathname==='/api/admin/settings'){
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'});
@@ -922,8 +930,8 @@ const server=http.createServer(async(req,res)=>{
         if(actor.role!=='admin') return sendJson(res,403,{error:'학교 관리자만 사용할 수 있습니다.'}); const b=await readJson(req,50000);
         const type=safeStr(b.type,30),oldInput=safeStr(b.oldCode,50),newInput=safeStr(b.newCode,50),types=new Set(['HALT','RESUME','RENAME','SPLIT','REVERSE_SPLIT','CODE_CHANGE','MERGER','DELIST']);
         const changesCode=['CODE_CHANGE','MERGER'].includes(type),oldCode=resolveStockCode(oldInput),newCode=changesCode?resolveStockCode(newInput):oldCode;
-        if(!types.has(type)||!oldCode||!getStock(oldCode)) return sendJson(res,400,{error:'기업행동 유형과 국내 6자리 종목코드를 확인하세요.'});
-        if(changesCode&&(!newCode||!getStock(newCode))) return sendJson(res,400,{error:'변경/합병 후 국내 6자리 종목코드를 현재 종목 목록에서 확인하세요.'});
+        if(!types.has(type)||!isDomesticCode(oldCode)||!getStock(oldCode)) return sendJson(res,400,{error:'기업행동 유형과 국내 6자리 종목코드를 확인하세요.'});
+        if(changesCode&&(!isDomesticCode(newCode)||!getStock(newCode))) return sendJson(res,400,{error:'변경/합병 후 국내 6자리 종목코드를 현재 종목 목록에서 확인하세요.'});
         const ratioNum=Number(b.ratioNum??1),ratioDen=Number(b.ratioDen??1),settlementPrice=Number(b.settlementPrice??0),cashPerOldShare=Number(b.cashPerOldShare??0);
         if(![ratioNum,ratioDen,settlementPrice,cashPerOldShare].every(Number.isFinite)||ratioNum<=0||ratioDen<=0||settlementPrice<0||!Number.isSafeInteger(cashPerOldShare)||cashPerOldShare<0)return sendJson(res,400,{error:'기업행동 비율과 정산 금액을 확인하세요.'});
         if(['SPLIT','REVERSE_SPLIT','CODE_CHANGE','MERGER'].includes(type)&&(!(ratioNum>0)||!(ratioDen>0))) return sendJson(res,400,{error:'교환비율을 확인하세요.'});
@@ -1074,7 +1082,7 @@ async function initDbWithRetry(){
 
 async function main(){
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.3.2: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.4.0: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (하루 1회 확인)');
@@ -1085,6 +1093,8 @@ async function main(){
   await initDbWithRetry();
   // 시세 스케줄러는 DB 준비 뒤에 시작한다 — 종목 변경 이벤트를 DB에 먼저 기록해야
   // 새 시세 캐시를 확정할 수 있으므로(recordUniverseEvents), DB 없이는 갱신이 취소된다.
+  await usMarket.init();
+  const tickUs=()=>usMarket.tick().catch(e=>console.warn('[미국시세]',e.message));tickUs();setInterval(tickUs,60000).unref();
   refreshMarketDataOnSchedule();
 }
 main().catch(e => { console.error('[boot] 기동 실패:', e.message); process.exit(1); });

@@ -108,18 +108,20 @@
         <div class="search-panel">
           <div class="search-box">
             <span class="search-icon" aria-hidden="true"></span>
-            <input id="search" class="search-input" placeholder="회사명 · 국내 6자리 종목코드 검색" autocomplete="off" />
+            <input id="search" class="search-input" placeholder="회사명 · 국내 코드 · 미국 티커 검색" autocomplete="off" />
           </div>
           <select id="marketFilter" class="market-select" aria-label="시장 선택">
             <option value="">전체 시장</option>
             <option value="KR">한국 전체</option>
+            <option value="US">미국 주식</option>
             <option value="KOSPI">코스피</option>
             <option value="KOSDAQ">코스닥</option>
             <option value="KONEX">코넥스</option>
           </select>
         </div>
 
-        <div class="market-note">금융위원회 공공데이터의 공식 일별 시세를 사용합니다. 서버가 하루 1회 새 자료를 확인하며, 화면에 기준일을 표시합니다.</div>
+        <div class="market-note">국내 종목은 금융위원회 공공데이터의 공식 일별 시세를 사용합니다. 서버가 하루 1회 새 자료를 확인하며, 화면에 기준일을 표시합니다.</div>
+        <div id="usMarketStatus" class="market-note"></div>
         <div id="stockGrid" class="stock-list"></div>
         <div id="searchMore" class="search-more hidden"><button id="moreBtn" class="btn btn-secondary">검색 결과 더 보기</button></div>
       </section>
@@ -204,7 +206,7 @@
         <div class="daily-chart-head">
           <div>
             <h3 id="dailyChartHeading">일봉 차트</h3>
-            <p>공공데이터 일봉 · 하루 1회 · 다음 영업일 오후 반영</p>
+            <p id="chartSchedule">공공데이터 일봉 · 하루 1회 · 다음 영업일 오후 반영</p>
           </div>
           <div class="daily-chart-ranges" role="group" aria-label="일봉 차트 기간">
             <button type="button" class="daily-chart-range active" data-chart-period="1m" aria-controls="dailyChartFigure" aria-pressed="true">1개월</button>
