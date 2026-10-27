@@ -174,3 +174,5 @@ dialog{border:0;padding:0;background:transparent;max-width:none;color:var(--text
 .command-row-reason{margin-top:10px;grid-template-columns:1fr auto}
 .table-empty-cell{text-align:center;padding:25px}
 #historyBody .table-empty-cell{color:#728097;padding:28px}
+
+.stock-explore-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.stock-explore-actions button{flex:1;min-width:150px}.stock-explore-sort{display:flex;align-items:center;gap:12px;margin:12px 0}.stock-explore-sort select{flex:1;max-width:260px}.stock-explore-sort label{font-weight:600;white-space:nowrap}

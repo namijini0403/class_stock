@@ -73,17 +73,18 @@ function stockCard(s){
   stockCache.set(s.code,s);const p=priceMap.get(s.code),blocked=Boolean(s.tradeBlockedReason)||s.active===false||s.tradingHalt||s.liquidation,status=s.active===false?'상장목록 제외':s.tradingHalt?'거래정지':s.liquidation?'정리매매':s.tradeBlockedReason?'거래 제한':'';
   const primary=p?.price?pricePrimary(p):blocked?'거래 불가':'클릭해 시세 확인';
   const change=p?.price?(p.usdMicros?`${changeText(p)} (달러 기준)`: `${changeText(p)} · ${Number(p.change||0)>=0?'+':''}${fmt(p.change)}`):'검색 가능한 상장 종목';
-  return `<button type="button" class="stock-card ${blocked?'stock-blocked':''}" data-code="${esc(s.code)}"><div class="stock-head"><div><div class="stock-name">${esc(s.name)} ${status?`<span class="status-badge">${status}</span>`:''}</div><div class="stock-code">${esc(codeLabel(s))}</div></div><div class="stock-sector">${esc(marketKo(s.market))}</div></div><div class="stock-price">${primary}</div><div class="change ${changeClass(p?.changeRate||0)}">${status||change}</div><div class="stock-foot"><span>${esc(sourceText(p))}</span><span>${p?.delayed?'지연 데이터':''}</span></div></button>`
+  return `<button type="button" class="stock-card ${blocked?'stock-blocked':''}" data-code="${esc(s.code)}"><div class="stock-head"><div><div class="stock-name">${esc(s.name)} ${status?`<span class="status-badge">${status}</span>`:''}</div><div class="stock-code">${esc(codeLabel(s))}</div></div><div class="stock-sector">${esc(marketKo(s.market))}</div></div><div class="stock-price">${primary}</div><div class="change ${changeClass(p?.changeRate||0)}">${status||change}</div><div class="stock-foot"><span>${esc(sourceText(p))}${s.marketCap?` · 시가총액 ${(s.marketCap/1e8).toLocaleString('ko-KR',{maximumFractionDigits:1})}억원 (${esc(dateKo(s.marketCapAsOfDate))})`:''}</span><span>${p?.delayed?'지연 데이터':''}</span></div></button>`
 }
-function renderMarket(){if(!displayedStocks.length){$('#stockGrid').innerHTML='<div class="card empty-card">검색 결과가 없습니다.</div>';return}$('#stockGrid').innerHTML=displayedStocks.map(stockCard).join('');document.querySelectorAll('.stock-card').forEach(x=>x.onclick=()=>openTrade(x.dataset.code));$('#searchMore').classList.toggle('hidden',displayedStocks.length>=searchTotal)}
+function renderMarket(){$('#searchMore').classList.toggle('hidden',displayedStocks.length>=searchTotal);if(!displayedStocks.length){$('#stockGrid').innerHTML='<div class="card empty-card">검색 결과가 없습니다.</div>';return}$('#stockGrid').innerHTML=displayedStocks.map(stockCard).join('');document.querySelectorAll('.stock-card').forEach(x=>x.onclick=()=>openTrade(x.dataset.code));$('#searchMore').classList.toggle('hidden',displayedStocks.length>=searchTotal)}
 async function searchStocks(reset=true){
-  const q=$('#search').value.trim(),market=$('#marketFilter').value,fetchId=++searchFetchId;
+  const q=$('#search').value.trim(),market=$('#marketFilter').value,sort=$('#stockSort').value||'name',fetchId=++searchFetchId;
   if(reset){searchOffset=0;displayedStocks=[]}
-  const d=await api(`/api/stocks?q=${encodeURIComponent(q)}&market=${encodeURIComponent(market)}&limit=40&offset=${searchOffset}`);
+  const d=await api(`/api/stocks?q=${encodeURIComponent(q)}&market=${encodeURIComponent(market)}&sort=${encodeURIComponent(sort)}&limit=40&offset=${searchOffset}`);
   if(fetchId!==searchFetchId)return;
   for(const stock of d.items)stockCache.set(stock.code,stock);
   displayedStocks.push(...d.items);searchOffset=displayedStocks.length;searchTotal=d.total;renderMarket();
-  $('#priceStatus').textContent=`${q?'검색 결과':'전체 종목'} ${d.total.toLocaleString()}개 · 종목을 누르면 시세 조회`;
+  $('#priceStatus').textContent=`${q?'검색 결과':'전체 종목'} ${d.total.toLocaleString()}개 중 ${displayedStocks.length.toLocaleString()}개 표시 · ${sort==='cap-asc'?'시가총액 작은 순':sort==='cap-desc'?'시가총액 큰 순':'이름 가나다순'}`;
+  $('#browseHint').textContent=sort==='name'?'이름을 몰라도 둘러볼 수 있어요. 아래 더 보기로 다음 종목을 확인하세요.':`국내 시가총액 확인 ${Number(d.knownMarketCaps||0).toLocaleString()}종목 · 자료가 없는 종목은 뒤에 표시합니다. 주가가 낮은 순이나 투자 추천 순위가 아닙니다.`;
   refreshQuotes(d.items.map(x=>x.code));
 }
 
@@ -348,6 +349,9 @@ document.querySelectorAll('#classCode,#nickname,#pin').forEach(el=>el.addEventLi
 $('#logoutBtn').onclick=logout;
 $('#tradeClose').onclick=()=>$('#tradeDialog').close();$('#tradeDialog').addEventListener('close',()=>{tradeDialogGeneration++;dailyChartFetchId++;dailyChartLoading=false;clearTimeout(dailyChartResizeTimer)});$('#buyTab').onclick=()=>setTradeSide('BUY');$('#sellTab').onclick=()=>setTradeSide('SELL');$('#tradeQty').oninput=updateEstimate;$('#tradeSubmit').onclick=submitTrade;
 document.querySelectorAll('.daily-chart-range').forEach(button=>{button.onclick=()=>selectDailyChartPeriod(button.dataset.chartPeriod,{dialogGeneration:tradeDialogGeneration,reveal:true});button.addEventListener('focus',()=>revealDailyChartRange(button))});
+$('#stockSort').onchange=()=>searchStocks(true).catch(e=>toast(e.message));
+function browseFromHome(sort){$('#search').value='';$('#marketFilter').value='KR';$('#stockSort').value=sort;switchTab('market');searchStocks(true).catch(e=>toast(e.message))}
+$('#browseSmall').onclick=()=>browseFromHome('cap-asc');$('#browseAll').onclick=()=>browseFromHome('name');
 $('#search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>searchStocks(true).catch(e=>toast(e.message)),250)};$('#marketFilter').onchange=()=>searchStocks(true).catch(e=>toast(e.message));$('#moreBtn').onclick=()=>searchStocks(false).catch(e=>toast(e.message));
 document.querySelectorAll('.quick-qty button').forEach(b=>b.onclick=()=>{const p=priceMap.get(selectedCode)?.price||1,h=state.holdings?.[selectedCode]?.qty||0;if(b.dataset.q==='max'&&tradeSide==='BUY'){let q=Math.floor(Number(state.cash||0)/(p*(1+Number(config?.tradeFeeRate||0))));const qp=priceMap.get(selectedCode);while(q>0&&quoteTotal(qp,q)+feeFor(quoteTotal(qp,q))>Number(state.cash||0))q--;while(q<100000&&quoteTotal(qp,q+1)+feeFor(quoteTotal(qp,q+1))<=Number(state.cash||0))q++;q=Math.min(q,100000);$('#tradeQty').value=q}else $('#tradeQty').value=b.dataset.q==='max'?h:b.dataset.q;updateEstimate()});
 function switchTab(tab){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));document.querySelectorAll('.tabpage').forEach(x=>x.classList.add('hidden'));const page=$(`#tab-${tab}`);if(page)page.classList.remove('hidden');if(tab==='home'){renderStats();renderHome()}if(tab==='portfolio'){renderPortfolio();refreshHeldQuotes()}if(tab==='history'){renderHistory();renderHistoryCards()}window.scrollTo({top:0,behavior:'smooth'})}

@@ -1,3 +1,4 @@
+const {browseStocks,SORTS:STOCK_SORTS}=require('./lib/stock-browse');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -546,7 +547,8 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==='GET'&&url.pathname==='/api/stocks'){
       if(!rateLimitOk('stocks:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       const limit=Math.min(100,Math.max(1,Number(url.searchParams.get('limit')||50))); const offset=Math.max(0,Number(url.searchParams.get('offset')||0));
-      const q=url.searchParams.get('q')||'',market=url.searchParams.get('market')||'';const domestic=universe.search(q,{market,limit:10000,offset:0});const us=(!market||market==='US')?US_STOCKS.filter(s=>(s.name+' '+s.symbol+' '+s.code).toLowerCase().includes(q.toLowerCase().trim())):[];const items=[...domestic.items,...us];const r={items:items.slice(offset,offset+limit),total:items.length,offset,limit}; return sendJson(res,200,{...r,items:r.items.map(stockView),universeCount:universe.stocks.length});
+      const sort=url.searchParams.get('sort')||'name';if(!STOCK_SORTS.has(sort)||!Number.isInteger(limit)||!Number.isInteger(offset))return sendJson(res,400,{error:'종목 정렬과 페이지를 확인하세요.'});
+      const q=url.searchParams.get('q')||'',market=url.searchParams.get('market')||'';const domestic=universe.search(q,{market,limit:10000,offset:0});const us=(!market||market==='US')?US_STOCKS.filter(s=>(s.name+' '+s.symbol+' '+s.code).toLowerCase().includes(q.toLowerCase().trim())):[];const items=[...domestic.items,...us];const r=browseStocks(items,{sort,offset,limit,quote:s=>marketData.quote(s)}); return sendJson(res,200,{...r,items:r.items.map(stockView),universeCount:universe.stocks.length});
     }
     if(req.method==='GET'&&url.pathname==='/api/stocks/by-codes'){
       if(!rateLimitOk('bycodes:'+clientIp(req),600,60000)) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
@@ -1082,7 +1084,7 @@ async function initDbWithRetry(){
 
 async function main(){
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.4.0: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.4.1: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (하루 1회 확인)');

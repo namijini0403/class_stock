@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+const {browseStocks}=createRequire(import.meta.url)('../lib/stock-browse');
+const stocks=[{code:'1',name:'가',market:'KOSPI'},{code:'2',name:'나',market:'KOSDAQ'},{code:'3',name:'다',market:'KONEX'},{code:'4',name:'라',market:'KOSDAQ'},{code:'US:AAPL',name:'애플',market:'US'}];
+const caps={1:100000,2:10,3:0,4:10};
+const quote=s=>({marketCap:caps[s.code],asOfDate:'2026-10-26'});
+const small=browseStocks(stocks,{sort:'cap-asc',quote});
+assert.deepEqual(small.items.map(s=>s.code),['2','4','1','3','US:AAPL']);
+assert.equal(small.knownMarketCaps,3);assert.equal(small.items[0].marketCapAsOfDate,'2026-10-26');
+assert.deepEqual(browseStocks(stocks,{sort:'cap-desc',quote}).items.map(s=>s.code),['1','2','4','3','US:AAPL']);
+const pages=[0,2,4].flatMap(offset=>browseStocks(stocks,{sort:'cap-asc',quote,offset,limit:2}).items);
+assert.deepEqual(pages,small.items);assert.equal(new Set(pages.map(s=>s.code)).size,5);
+assert.deepEqual(browseStocks(stocks,{sort:'name',quote}).items.map(s=>s.name),['가','나','다','라','애플']);
+assert.equal(stocks[0].marketCap,undefined);
+assert.throws(()=>browseStocks(stocks,{sort:'invalid'}));
+console.log('PASS: market-cap order, unknown values last, stable pagination, alphabetical order');

@@ -95,6 +95,7 @@
             </div>
             <button class="text-button tab-jump" data-go="market">종목 찾기</button>
           </div>
+          <div class="stock-explore-actions"><button id="browseSmall" class="btn btn-secondary">작은 기업 둘러보기</button><button id="browseAll" class="btn btn-secondary">전체 종목 가나다순</button></div>
           <div id="homeMarketList" class="compact-list"></div>
         </section>
       </section>
@@ -120,6 +121,8 @@
           </select>
         </div>
 
+        <div class="stock-explore-sort"><label for="stockSort">종목 정렬</label><select id="stockSort" class="market-select"><option value="name">이름 가나다순</option><option value="cap-asc">시가총액 작은 순</option><option value="cap-desc">시가총액 큰 순</option></select></div>
+        <p id="browseHint" class="market-note">이름을 몰라도 전체 종목을 둘러볼 수 있어요. 기업 규모가 궁금하면 시가총액 순으로 바꿔 보세요.</p>
         <div class="market-note">국내 종목은 금융위원회 공공데이터의 공식 일별 시세를 사용합니다. 서버가 하루 1회 새 자료를 확인하며, 화면에 기준일을 표시합니다.</div>
         <div id="usMarketStatus" class="market-note"></div>
         <div id="stockGrid" class="stock-list"></div>

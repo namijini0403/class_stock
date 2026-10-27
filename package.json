@@ -1,13 +1,13 @@
 {
   "name": "class-stock",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "private": true,
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node scripts/syntax-check.mjs && node scripts/check-kr-only.mjs && node scripts/check-daily-chart.mjs && node scripts/check-placeholders.mjs && node scripts/smoke-auth.mjs && node scripts/check-client-session.mjs && node scripts/check-us-market.mjs",
+    "check": "node scripts/syntax-check.mjs && node scripts/check-kr-only.mjs && node scripts/check-daily-chart.mjs && node scripts/check-placeholders.mjs && node scripts/smoke-auth.mjs && node scripts/check-client-session.mjs && node scripts/check-us-market.mjs && node scripts/check-stock-browse.mjs",
     "check:kr-only": "node scripts/check-kr-only.mjs",
     "check:server": "node scripts/smoke-server.mjs",
     "check:classroom": "node scripts/check-classroom.mjs"
