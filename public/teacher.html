@@ -58,7 +58,7 @@
     </article>
 
     <article class="card command-box">
-      <div class="section-head"><div><h2>돈 지급·차감</h2><p>금액과 사유를 기록합니다. 학생의 다음 동기화 때 자동 반영됩니다.</p></div></div>
+      <div class="section-head"><div><h2>돈 지급·차감</h2><p>선택한 학생 모두에게 한 번에 반영합니다. 학생 화면은 다음 새로고침 때 갱신됩니다.</p></div></div>
       <div class="command-row">
         <label>구분<select id="commandType"><option value="GIVE">지급</option><option value="TAKE">차감</option></select></label>
         <label>금액<input id="commandAmount" inputmode="numeric" placeholder="예: 100000" /></label>
@@ -68,6 +68,8 @@
         <label>지급·차감 사유 <span class="optional">필수 · 120자</span><input id="commandReason" maxlength="120" placeholder="예: 학급 활동 보상, 학급 매점 사용" /></label>
         <button id="sendCommandBtn" class="btn btn-primary">선택 학생에게 적용</button>
       </div>
+      <label><input id="includeFutureStudents" type="checkbox" /> 학급 전체 지급: 현재 학생 모두 + 나중에 가입하는 학생의 초기 자본금에도 추가</label>
+      <p class="muted">위 항목을 선택하면 학생 선택과 관계없이 불러온 학급 전체에 지급합니다. 지급 기록의 개별 취소는 해당 학생에게만 적용되며, 이후 가입자의 초기 자본금은 관리자 학급 설정에서 변경할 수 있습니다.</p>
       <p class="muted">차감액이 학생의 보유 현금보다 많으면 주식을 강제로 매도하지 않고 현금은 0원까지만 차감합니다.</p>
     </article>
 
@@ -115,7 +117,7 @@
         <label>학급 이름<input id="newClassName" maxlength="60" placeholder="예: 5학년 2반" /></label>
         <label>학년<input id="newClassGrade" inputmode="numeric" maxlength="2" /></label>
         <label>반<input id="newClassNo" inputmode="numeric" maxlength="3" /></label>
-        <label>초기 자본금<input id="newClassCash" type="number" min="0" step="1" placeholder="예: 1000000" /></label>
+        <label>초기 자본금 (새로 가입하는 학생만)<input id="newClassCash" type="number" min="0" step="1" placeholder="예: 1000000" /></label>
         <button id="createClassBtn" class="btn btn-primary btn-small">학급 저장</button>
       </div>
       <p class="muted">초기 자본금을 바꿔도 이미 접속한 학생에게는 영향이 없고, 신규 가입자에게만 적용됩니다.</p>

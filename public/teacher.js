@@ -1,6 +1,6 @@
 const $=s=>document.querySelector(s);
 const fmt=n=>Math.round(Number(n||0)).toLocaleString('ko-KR')+'원';
-let token=sessionStorage.getItem('teacherToken')||'',actor=null,students=[],classes=[];
+let token=sessionStorage.getItem('teacherToken')||'',actor=null,students=[],classes=[],loadedClassCode='';
 function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(el.t);el.t=setTimeout(()=>el.classList.remove('show'),2500)}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function clearTeacherSession(){sessionStorage.removeItem('teacherToken');sessionStorage.removeItem('teacherActor');token=''}
@@ -16,7 +16,7 @@ function renderRoster(){
   if(!students.length){$('#rosterBody').innerHTML='<tr><td colspan="9" class="muted table-empty-cell">등록된 학생이 없습니다. 학생이 먼저 학급 코드로 접속해야 합니다.</td></tr>';updateSelection();return}
   $('#rosterBody').innerHTML=students.map(s=>{
     const rate=Number(s.profitRate||0);
-    const rateCls=rate>0?'up':(rate<0?'down':'');
+    const rateCls=s.missingQuotes?'muted':rate>0?'up':(rate<0?'down':'');
     const updated=s.updatedAt?new Date(s.updatedAt).toLocaleString('ko-KR'):'-';
     return `<tr>
       <td><input class="student-select" type="checkbox" value="${esc(s.studentId)}"/></td>
@@ -25,7 +25,7 @@ function renderRoster(){
       <td>${Number(s.holdingsCount||0)}</td>
       <td>${fmt(s.holdingsValue)}</td>
       <td><b>${fmt(s.totalAsset)}</b></td>
-      <td class="${rateCls}">${rate.toFixed(2)}%</td>
+      <td class="${rateCls}">${s.missingQuotes?'시세 확인 필요':`${rate>0?'+':''}${rate.toFixed(2)}%<br><small>${Number(s.profit)>0?'+':''}${fmt(s.profit)}</small>`}</td>
       <td>${esc(updated)}</td>
       <td><button class="secondary reset-pin-btn" data-id="${esc(s.studentId)}">PIN 재설정</button> <button class="danger delete-student-btn" data-id="${esc(s.studentId)}">삭제</button></td>
     </tr>`;
@@ -52,6 +52,7 @@ async function loadClass(){
     const d=await api('/api/teacher/students'+scopeQuery());
     if(d.actor)actor=d.actor;
     students=d.students||[];
+    loadedClassCode=d.classCode;
     renderClassCodeBanner(d.classCode);
     renderClassSettingsCard(d);
     renderRoster();
@@ -60,8 +61,34 @@ async function loadClass(){
 }
 function statusText(c){if(c.status==='APPLIED')return'반영 완료';if(c.status==='CANCELLED')return'취소됨';return c.status}
 async function loadCommands(){try{const d=await api('/api/teacher/commands'+scopeQuery());const a=d.commands||[];$('#commandBody').innerHTML=a.length?a.map(c=>{const amount=Number(c.amount||0),applied=c.appliedAmount==null?'':`<br><small>실제 ${Number(c.appliedAmount)>=0?'+':''}${fmt(c.appliedAmount)}</small>`;const disabled=c.status==='CANCELLED'||c.reversedBy?'disabled':'';return`<tr><td>${esc(new Date(c.createdAt).toLocaleString('ko-KR'))}</td><td><b>${esc(c.nickname||'?')}</b></td><td class="${amount>=0?'up':'down'}"><b>${amount>=0?'+':''}${fmt(amount)}</b>${applied}</td><td>${esc(c.reason)}</td><td><span class="status status-${esc(c.status)}">${esc(statusText(c))}</span></td><td><button class="secondary cancel-command" data-id="${esc(c.id)}" ${disabled}>${c.status==='APPLIED'?'반대 거래로 취소':'취소'}</button></td></tr>`}).join(''):'<tr><td colspan="6" class="muted table-empty-cell">기록이 없습니다.</td></tr>';document.querySelectorAll('.cancel-command:not([disabled])').forEach(b=>b.onclick=()=>cancelCommand(b.dataset.id))}catch(e){toast(e.message)}}
-async function cancelCommand(id){if(!confirm('이 지급·차감 명령을 취소할까요? 이미 학생에게 반영된 경우 반대 금액 명령이 새로 만들어집니다.'))return;try{await api(`/api/teacher/commands/${encodeURIComponent(id)}/cancel`,{method:'POST',body:'{}'});toast('취소 처리를 기록했습니다.');await loadCommands()}catch(e){toast(e.message)}}
-async function sendCommand(){const ids=selectedIds(),raw=Number(String($('#commandAmount').value).replace(/,/g,''));if(!ids.length)return toast('학생을 선택하세요.');if(!Number.isFinite(raw)||raw<=0)return toast('금액을 양수로 입력하세요.');const reason=$('#commandReason').value.trim();if(!reason)return toast('사유를 입력하세요.');const amount=$('#commandType').value==='TAKE'?-Math.trunc(raw):Math.trunc(raw);if(!confirm(`${ids.length}명에게 ${amount>=0?'지급':'차감'} ${fmt(Math.abs(amount))} 명령을 만들까요?`))return;try{const d=await api('/api/teacher/command',{method:'POST',body:JSON.stringify({studentIds:ids,amount,reason})});toast(`${d.count}명에게 명령을 만들었습니다.`);$('#commandReason').value='';await loadClass()}catch(e){toast(e.message)}}
+async function cancelCommand(id){if(!confirm('이 지급·차감 명령을 취소할까요? 이미 학생에게 반영된 경우 반대 금액 명령이 새로 만들어집니다.'))return;try{await api(`/api/teacher/commands/${encodeURIComponent(id)}/cancel`,{method:'POST',body:'{}'});toast('취소 처리를 기록했습니다.');await loadClass()}catch(e){toast(e.message)}}
+let commandBusy=false;
+async function sendCommand(){
+  if(commandBusy)return;
+  const ids=selectedIds().sort(),raw=Number(String($('#commandAmount').value).replace(/,/g,''));
+  const includeFutureStudents=$('#includeFutureStudents').checked;
+  if(includeFutureStudents&&!loadedClassCode)return toast('학급을 먼저 불러오세요.');
+  if(!includeFutureStudents&&!ids.length)return toast('학생을 선택하세요.');
+  if(!Number.isSafeInteger(raw)||raw<=0)return toast('금액을 양의 정수로 입력하세요.');
+  const reason=$('#commandReason').value.trim();
+  if(!reason)return toast('사유를 입력하세요.');
+  const amount=$('#commandType').value==='TAKE'?-raw:raw;
+  if(includeFutureStudents&&amount<0)return toast('이후 가입자 포함은 지급에만 사용할 수 있습니다.');
+  if(!confirm(includeFutureStudents?`${loadedClassCode}반 현재 학생 모두에게 ${fmt(amount)}을 지급하고, 이후 가입자의 초기 자본금도 같은 금액만큼 올릴까요?`:`${ids.length}명 각자에게 ${amount>=0?'지급':'차감'} ${fmt(Math.abs(amount))}을 적용할까요?`))return;
+  const payload={studentIds:includeFutureStudents?[]:ids,amount,reason,includeFutureStudents,classCode:loadedClassCode},fingerprint=JSON.stringify({actorId:actor.id,...payload});
+  let pending;
+  try{pending=JSON.parse(sessionStorage.getItem('pendingTeacherCommand')||'null')}catch{}
+  if(!pending||pending.fingerprint!==fingerprint)pending={fingerprint,requestId:crypto.randomUUID()};
+  sessionStorage.setItem('pendingTeacherCommand',JSON.stringify(pending));
+  commandBusy=true;$('#sendCommandBtn').disabled=true;
+  try{
+    const d=await api('/api/teacher/command',{method:'POST',body:JSON.stringify({...payload,requestId:pending.requestId})});
+    sessionStorage.removeItem('pendingTeacherCommand');
+    toast(`${d.count}명 모두 반영 완료${d.includesFutureStudents?' · 이후 가입자 포함':''}`);$('#commandReason').value='';await loadClass();
+  }catch(e){toast(e.message)}
+  finally{commandBusy=false;$('#sendCommandBtn').disabled=false}
+}
+
 async function loadAdminSettings(){if(actor?.role!=='admin')return;try{const d=await api('/api/admin/settings');$('#feeRatePct').value=(Number(d.tradeFeeRate||0)*100).toFixed(3).replace(/0+$/,'').replace(/\.$/,'');$('#feeCurrent').textContent=`현재 ${(Number(d.tradeFeeRate||0)*100).toFixed(3)}%`}catch(e){toast(e.message)}}
 async function saveFee(){const pct=Number($('#feeRatePct').value);if(!Number.isFinite(pct)||pct<0||pct>1)return toast('수수료율은 0~1%로 입력하세요.');try{const d=await api('/api/admin/settings/fee',{method:'POST',body:JSON.stringify({rate:pct/100})});$('#feeCurrent').textContent=`현재 ${(Number(d.tradeFeeRate||0)*100).toFixed(3)}%`;toast('거래 수수료율을 저장했습니다.')}catch(e){toast(e.message)}}
 
@@ -88,7 +115,7 @@ function renderClassList(){
     return `<div class="action-chip">
       <b>${esc(c.code)}</b> · ${esc(c.name||'')} · ${esc(c.grade||'')}학년 ${esc(c.class_no||'')}반 · 학생 ${Number(c.student_count||0)}명
       <div class="teacher-controls class-cash-controls">
-        <label>초기 자본금<input class="class-cash-input" type="number" min="0" step="1" data-code="${esc(c.code)}" value="${cash}" /></label>
+        <label>초기 자본금 (신규 가입자만)<input class="class-cash-input" type="number" min="0" step="1" data-code="${esc(c.code)}" value="${cash}" /></label>
         <button class="btn btn-secondary btn-small save-class-cash" data-code="${esc(c.code)}">저장</button>
       </div>
     </div>`;
@@ -165,6 +192,7 @@ async function showApp(){
   }
 }
 function showClassPrompt(){
+  loadedClassCode='';
   const note='학급을 선택한 뒤 불러오기를 누르세요.';
   students=[];
   $('#rosterBody').innerHTML=`<tr><td colspan="9" class="muted table-empty-cell">${note}</td></tr>`;
@@ -210,4 +238,5 @@ async function disableTeacher(loginId){
 }
 
 $('#loginBtn').onclick=login;$('#refreshKrMarketBtn').onclick=refreshKrMarket;$('#saveFeeBtn').onclick=saveFee;$('#createActionBtn').onclick=createCorporateAction;$('#refreshActionsBtn').onclick=loadActions;$('#teacherPassword').onkeydown=e=>{if(e.key==='Enter')login()};$('#logoutBtn').onclick=()=>{clearTeacherSession();actor=null;showApp()};$('#loadClassBtn').onclick=loadClass;$('#selectAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=true);updateSelection()};$('#clearAllBtn').onclick=()=>{document.querySelectorAll('.student-select').forEach(x=>x.checked=false);updateSelection()};$('#sendCommandBtn').onclick=sendCommand;$('#refreshCommandsBtn').onclick=loadCommands;$('#createTeacherBtn').onclick=createTeacher;$('#createClassBtn').onclick=createClass;$('#changePwBtn').onclick=changePassword;
+$('#scopeClassCode').onchange=showClassPrompt;
 restoreSession();

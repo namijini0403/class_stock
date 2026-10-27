@@ -91,6 +91,7 @@ if (IS_PRODUCTION) {
 
 const { signToken, verifyToken, safeEqual, scryptHash, scryptVerify, lockoutHash, tokenRemainingSeconds } = require('./lib/auth');
 const db = require('./lib/db');
+const { applyTeacherBatch } = require('./lib/teacher-batch');
 
 const PORT = Number(process.env.PORT || 3000);
 const INITIAL_CASH = Number(process.env.INITIAL_CASH || 1000000);
@@ -460,13 +461,14 @@ function summarizeState(state) {
   const cash = Number(state.cash || 0);
   const holdings = state.holdings || {};
   const codes = Object.keys(holdings);
-  let holdingsValue = 0;
+  let holdingsValue = 0, missingQuotes = 0;
   for (const code of codes) {
     const h = holdings[code] || {};
     let price;
     if (h.status === 'DELISTED' || h.status === 'REMOVED') price = Number(h.valuationPrice || 0);
     else {
       const quoted = Number(marketData.quote(getStock(code))?.price || 0);
+      if (!(quoted > 0)) missingQuotes++;
       price = quoted > 0 ? quoted : Number(h.valuationPrice || h.avgPrice || 0);
     }
     holdingsValue += price * Number(h.qty || 0);
@@ -476,7 +478,7 @@ function summarizeState(state) {
   const totalAsset = cash + holdingsValue;
   const capital = Number(state.initialCash || 0) + Number(state.teacherNetAdjustments || 0);
   const profitRate = capital > 0 ? (totalAsset - capital) / capital * 100 : 0;
-  return { cash, holdingsCount, holdingsValue, totalAsset, profitRate };
+  return { cash, holdingsCount, holdingsValue, totalAsset, profitRate, profit: totalAsset - capital, missingQuotes };
 }
 
 function serveStatic(req,res){
@@ -588,23 +590,25 @@ const server=http.createServer(async(req,res)=>{
       // 학교 NAT 환경에서는 한 반 전체가 공인 IP 하나를 공유하므로 IP만으로 제한하면 개학 첫날
       // 단체 가입이 막힌다. classCode까지 묶어 반별로 넉넉히 허용하고, IP 단독 폭주에 대비해
       // 더 느슨한 순수 IP 백스톱을 별도로 둔다.
-      const classCode=String(b.classCode||'').trim().toUpperCase();
+      const classCode=String(b.classCode||'').normalize('NFKC').trim().toUpperCase();
       const okJoin=rateLimitOk('join:'+clientIp(req)+':'+classCode,60,60000);
       const okJoinIp=rateLimitOk('joinip:'+clientIp(req),120,60000);
       if(!okJoin||!okJoinIp) return sendJson(res,429,{error:'요청이 너무 많습니다. 잠시 후 다시 시도하세요.'});
       if(!/^[A-Z0-9]{3,8}$/.test(classCode)) return sendJson(res,400,{error:'학급 코드를 확인하세요. (영문 대문자·숫자 3~8자)'});
-      const nickname=safeStr(b.nickname,10);
+      const nickname=safeStr(String(b.nickname||'').normalize('NFC'),10);
       if(!nickname) return sendJson(res,400,{error:'닉네임을 입력하세요.'});
       if(/\d{3,}/.test(nickname)) return sendJson(res,400,{error:'닉네임에 3자리 이상 연속 숫자를 넣을 수 없어요. (개인정보 보호)'});
-      const pin=String(b.pin||'');
+      const pin=String(b.pin||'').normalize('NFKC').trim();
       if(!/^\d{4}$/.test(pin)) return sendJson(res,400,{error:'PIN은 숫자 4자리입니다.'});
 
       const clsR=await db.query('SELECT code, name, grade, class_no, initial_cash FROM classes WHERE code=$1',[classCode]);
       const cls=clsR.rows[0];
       if(!cls) return sendJson(res,404,{error:'학급 코드를 찾을 수 없습니다. 선생님께 확인하세요.'});
 
-      const stuR=await db.query('SELECT id, pin_scrypt, token_epoch, state FROM students WHERE class_code=$1 AND nickname=$2',[classCode,nickname]);
-      const row=stuR.rows[0];
+      const stuR=await db.query('SELECT id, nickname, pin_scrypt, token_epoch FROM students WHERE class_code=$1',[classCode]);
+      const matches=stuR.rows.filter(s=>s.nickname.normalize('NFC').trim()===nickname);
+      if(matches.length>1) return sendJson(res,409,{error:'같은 표기의 닉네임이 여러 개 있습니다. 선생님께 계정 확인을 요청하세요.'});
+      const row=matches[0];
 
       let id, epo, state;
       if(row){
@@ -618,15 +622,20 @@ const server=http.createServer(async(req,res)=>{
           return sendJson(res,403,{error:'PIN이 올바르지 않습니다.'});
         }
         await db.clearAuthFail('student', ah);
-        id=row.id; epo=Number(row.token_epoch||0); state=row.state;
+        id=row.id; epo=Number(row.token_epoch||0);
       } else {
         id=crypto.randomUUID();
-        const initialCash=Number(cls.initial_cash ?? INITIAL_CASH);
-        state=newState({accountId:id, nickname, classCode, grade:cls.grade, classNo:cls.class_no, initialCash});
         const pinScrypt=await scryptHash(pin);
         try {
-          await db.query('INSERT INTO students (id, class_code, nickname, pin_scrypt, state) VALUES ($1,$2,$3,$4,$5)',
+          await db.withTransaction(async client=>{
+          const lockedClass=(await client.query('SELECT initial_cash FROM classes WHERE code=$1 FOR UPDATE',[classCode])).rows[0];
+          const existing=(await client.query('SELECT nickname FROM students WHERE class_code=$1',[classCode])).rows;
+          if(existing.some(s=>s.nickname.normalize('NFC').trim()===nickname))throw Object.assign(new Error('동시 가입'),{code:'23505'});
+          const initialCash=Number(lockedClass.initial_cash ?? INITIAL_CASH);
+          state=newState({accountId:id, nickname, classCode, grade:cls.grade, classNo:cls.class_no, initialCash});
+          await client.query('INSERT INTO students (id, class_code, nickname, pin_scrypt, state) VALUES ($1,$2,$3,$4,$5)',
             [id, classCode, nickname, pinScrypt, JSON.stringify(state)]);
+          });
         } catch(e) {
           // UNIQUE(class_code, nickname) — 동시에 같은 닉네임으로 가입 시도한 경쟁 상황.
           // 원문 Postgres 오류를 학생에게 노출하지 않고, 로그인으로 자동 전환하지도 않음
@@ -762,7 +771,8 @@ const server=http.createServer(async(req,res)=>{
         const clsR=await db.query('SELECT code, name, initial_cash FROM classes WHERE code=$1',[classCode]);
         const cls=clsR.rows[0]; if(!cls) return sendJson(res,404,{error:'학급을 찾을 수 없습니다.'});
         const r=await db.query('SELECT id, nickname, state, updated_at FROM students WHERE class_code=$1 ORDER BY nickname',[classCode]);
-        const students=r.rows.map(s=>({studentId:s.id,nickname:s.nickname,updatedAt:s.updated_at,...summarizeState(s.state)}));
+        const effectiveActions=domesticCorporateActions(db.getEffectiveCorporateActions());
+        const students=r.rows.map(s=>({studentId:s.id,nickname:s.nickname,updatedAt:s.updated_at,...summarizeState(applyCorporateActions(s.state,effectiveActions).next)}));
         await db.audit('ROSTER_VIEW', actor, {classCode});
         return sendJson(res,200,{actor,classCode,className:cls.name,initialCash:cls.initial_cash===null?null:Number(cls.initial_cash),students});
       }
@@ -781,35 +791,35 @@ const server=http.createServer(async(req,res)=>{
         }))});
       }
       if(req.method==='POST'&&url.pathname==='/api/teacher/command'){
-        const b=await readJson(req,200000); const amount=Math.trunc(Number(b.amount)); const reason=safeStr(b.reason,120);
+        const b=await readJson(req,200000); const amount=Number(b.amount); const reason=safeStr(b.reason,120);
         const uuidRe=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         const ids=[...new Set((Array.isArray(b.studentIds)?b.studentIds:[]).map(String))].filter(id=>uuidRe.test(id));
-        if(!Number.isFinite(amount)||amount===0||Math.abs(amount)>1000000000) return sendJson(res,400,{error:'지급/차감 금액을 확인하세요.'});
+        const wholeClass=b.includeFutureStudents===true?actorClassCode(actor,b.classCode):null;
+        if(!Number.isSafeInteger(amount)||amount===0||Math.abs(amount)>1000000000) return sendJson(res,400,{error:'지급/차감 금액을 확인하세요.'});
         if(!reason) return sendJson(res,400,{error:'지급/차감 사유를 입력하세요.'});
-        if(!ids.length) return sendJson(res,400,{error:'학생을 한 명 이상 선택하세요.'});
-        const rows=(await db.query('SELECT id, class_code FROM students WHERE id = ANY($1::uuid[])',[ids])).rows;
-        const allowed=rows.filter(row=>actorCanManageStudent(actor,row));
-        if(!allowed.length) return sendJson(res,403,{error:'선택한 학생을 관리할 권한이 없습니다.'});
-        const results=[]; const auditCommands=[];
-        for(const row of allowed){
+        if(b.includeFutureStudents===true&&!wholeClass) return sendJson(res,400,{error:'학급 코드를 확인하세요.'});
+        if(!ids.length&&!wholeClass) return sendJson(res,400,{error:'학생을 한 명 이상 선택하세요.'});
+        if(ids.length !== new Set((Array.isArray(b.studentIds)?b.studentIds:[]).map(String)).size) return sendJson(res,400,{error:'학생 목록을 확인하세요.'});
+        const requestId=b.requestId==null?null:String(b.requestId);
+        if(requestId&&!uuidRe.test(requestId)) return sendJson(res,400,{error:'지급 요청 번호를 확인하세요.'});
+        if(wholeClass&&!requestId)return sendJson(res,400,{error:'학급 전체 지급에는 요청 번호가 필요합니다. 화면을 새로고침하세요.'});
+        try {
+        const response=await applyTeacherBatch(db,{actor,ids,amount,reason,requestId,classCode:wholeClass,initialCash:INITIAL_CASH},async (row,client)=>{
           const cmdId=crypto.randomUUID();
-          let appliedAmount=0;
-          await withStudentState(row.id, null, async (state, client) => {
+          const state=applyCorporateActions(row.state,domesticCorporateActions(db.getEffectiveCorporateActions())).next;
             const {next,results:r}=applyTeacherCommands(state,[{id:cmdId,amount,reason,createdByName:actor.name}]);
-            appliedAmount=r[0].appliedAmount;
+            const appliedAmount=r[0].appliedAmount;
             // state 커밋과 같은 트랜잭션 안에서 감사 로우를 기록해, 크래시 시 상태만 바뀌고
             // 명령 기록이 유실되는 경우를 없앤다.
             await client.query(
               `INSERT INTO teacher_commands (id, student_id, amount, applied_amount, reason, status, created_by, created_by_name, applied_at)
                VALUES ($1,$2,$3,$4,$5,'APPLIED',$6,$7,now())`,
               [cmdId, row.id, amount, appliedAmount, reason, actor.id, actor.name]);
-            return {state:next};
-          });
-          results.push({studentId:row.id, appliedAmount});
-          auditCommands.push({studentId:row.id, commandId:cmdId, appliedAmount});
-        }
-        await db.audit('COMMAND_CREATE', actor, {amount, reason, count:results.length, commands:auditCommands});
-        return sendJson(res,200,{ok:true,count:results.length,results});
+            await client.query('UPDATE students SET state=$2, state_version=state_version+1, updated_at=now() WHERE id=$1',[row.id,JSON.stringify(next)]);
+            return {studentId:row.id,commandId:cmdId,appliedAmount};
+        });
+        return sendJson(res,200,response);
+        }catch(e){return sendJson(res,e.status||500,{error:e.status?e.message:'지급 결과를 확인하지 못했습니다. 같은 요청으로 다시 시도하세요.'});}
       }
       const cancelMatch=url.pathname.match(/^\/api\/teacher\/commands\/([^/]+)\/cancel$/);
       if(req.method==='POST'&&cancelMatch){
@@ -940,7 +950,7 @@ const server=http.createServer(async(req,res)=>{
         await db.query(
           `INSERT INTO teachers (id, login_id, display_name, pw_scrypt, role, class_code)
            VALUES ($1,$2,$3,$4,'teacher',$5)
-           ON CONFLICT (login_id) DO UPDATE SET display_name=EXCLUDED.display_name, pw_scrypt=EXCLUDED.pw_scrypt, class_code=EXCLUDED.class_code, updated_at=now()`,
+           ON CONFLICT (login_id) DO UPDATE SET display_name=EXCLUDED.display_name, pw_scrypt=EXCLUDED.pw_scrypt, class_code=EXCLUDED.class_code, token_epoch=teachers.token_epoch+1, updated_at=now()`,
           [id, loginId, name, pwScrypt, classCode]
         );
         return sendJson(res,200,{ok:true});
@@ -972,6 +982,7 @@ const server=http.createServer(async(req,res)=>{
         const name=safeStr(b.name,60), grade=safeStr(b.grade,2), classNo=safeStr(b.classNo,3);
         const initialCashRaw=(b.initialCash===undefined||b.initialCash===null||b.initialCash==='')?NaN:Number(b.initialCash);
         const initialCash=Number.isFinite(initialCashRaw)?Math.trunc(initialCashRaw):null;
+        if(b.initialCash!==undefined&&b.initialCash!==null&&b.initialCash!==''&&(!Number.isSafeInteger(initialCashRaw)||initialCashRaw<0))return sendJson(res,400,{error:'초기 자본금은 0 이상의 정수여야 합니다.'});
         await db.query(
           `INSERT INTO classes (code, name, grade, class_no, initial_cash, created_by)
            VALUES ($1,$2,$3,$4,$5,$6)
@@ -991,7 +1002,7 @@ const server=http.createServer(async(req,res)=>{
         if('classNo' in b){ vals.push(safeStr(b.classNo,3)); sets.push(`class_no=$${vals.length}`); }
         if('initialCash' in b){
           const n=Number(b.initialCash);
-          if(b.initialCash!==null && !Number.isFinite(n)) return sendJson(res,400,{error:'초기 자본금을 확인하세요.'});
+          if(b.initialCash!==null && (!Number.isSafeInteger(n)||n<0)) return sendJson(res,400,{error:'초기 자본금은 0 이상의 정수여야 합니다.'});
           vals.push(b.initialCash===null?null:Math.trunc(n)); sets.push(`initial_cash=$${vals.length}`);
         }
         if(!sets.length) return sendJson(res,400,{error:'변경할 항목이 없습니다.'});
@@ -1055,7 +1066,7 @@ async function initDbWithRetry(){
 
 async function main(){
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.3.0: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.3.1: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (하루 1회 확인)');

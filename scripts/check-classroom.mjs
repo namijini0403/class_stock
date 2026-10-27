@@ -1,0 +1,105 @@
+// Run against a disposable local Postgres database only.
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import pg from 'pg';
+
+const source=readFileSync(new URL('../server.js',import.meta.url),'utf8');
+let quote=120;
+const ctx={structuredClone,marketData:{quote:()=>({price:quote})},getStock:()=>({}),domesticStateView:s=>s};
+vm.createContext(ctx);
+vm.runInContext(source.slice(source.indexOf('function summarizeState('),source.indexOf('\nfunction serveStatic(')),ctx);
+const state={cash:900,initialCash:1000,holdings:{'005930':{qty:1,avgPrice:100}}};
+assert.equal(ctx.summarizeState(state).profit,20);
+assert.equal(ctx.summarizeState(state).profitRate,2);
+quote=80;assert.equal(ctx.summarizeState(state).profit,-20);
+quote=0;assert.equal(ctx.summarizeState(state).missingQuotes,1);
+quote=120;assert.equal(ctx.summarizeState({...state,cash:500900,teacherNetAdjustments:500000}).profit,20);
+console.log('PASS: gains, losses, missing quotes, deposits excluded from profit');
+
+if(!process.env.TEST_DATABASE_URL)throw new Error('TEST_DATABASE_URL must point to disposable local Postgres');
+const url=new URL(process.env.TEST_DATABASE_URL);
+assert.ok(['localhost','127.0.0.1','[::1]'].includes(url.hostname),'Only local test DB allowed');
+const schema='test_classroom_'+crypto.randomBytes(8).toString('hex');
+const root=new pg.Pool({connectionString:url.href});
+await root.query(`CREATE SCHEMA ${schema}`);
+url.searchParams.set('options',`-c search_path=${schema}`);
+const pool=new pg.Pool({connectionString:url.href});
+const port=24000+Math.floor(Math.random()*10000),base=`http://127.0.0.1:${port}`;
+const preload=`data:text/javascript,${encodeURIComponent("globalThis.fetch=async()=>{throw new Error('TEST_NETWORK_DISABLED')}")}`;
+const child=spawn(process.execPath,['--import',preload,'server.js'],{env:{...process.env,DATABASE_URL:url.href,PORT:String(port),NODE_ENV:'production',JWT_SECRET:crypto.randomBytes(32).toString('hex'),ADMIN_PASSWORD:'classroom-test-password',PUBLIC_DATA_SERVICE_KEY:'TEST_ONLY'},stdio:['ignore','pipe','pipe']});
+let logs='';child.stdout.on('data',x=>logs+=x);child.stderr.on('data',x=>logs+=x);
+async function call(path,body,token){const r=await fetch(base+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body?JSON.stringify(body):undefined});return {status:r.status,...await r.json()};}
+try{
+  let ready=false;
+  for(let i=0;i<100;i++){try{if((await call('/api/health')).ok){ready=true;break}}catch{}await new Promise(r=>setTimeout(r,100));}
+  assert.ok(ready,logs);
+  const admin=await call('/api/teacher/login',{id:'admin',password:'classroom-test-password'});assert.ok(admin.token);
+  assert.equal((await call('/api/admin/classes',{code:'CHECK1',name:'시험반',initialCash:1000000},admin.token)).status,200);
+  const a=await call('/api/auth/join',{classCode:'CHECK1',nickname:'가나다',pin:'0123'});
+  const b=await call('/api/auth/join',{classCode:'CHECK1',nickname:'라마바',pin:'4567'});
+  assert.equal(a.status,200);assert.equal(b.status,200);
+  const other=await call('/api/auth/join',{classCode:'ｃｈｅｃｋ１',nickname:'가나다'.normalize('NFD'),pin:'０１２３ '});
+  assert.equal(other.studentId,a.studentId);
+  assert.equal((await call('/api/me',null,a.accessToken)).status,200);
+  assert.equal((await call('/api/me',null,other.accessToken)).status,200);
+  assert.equal((await call('/api/auth/join',{classCode:'CHECK1',nickname:'가나다',pin:'9999'})).status,403);
+  console.log('PASS: two-device login, Korean Unicode, full-width input, wrong PIN rejected');
+  const ids=[a.studentId,b.studentId].sort();
+  const payload={studentIds:ids,amount:500000,reason:'전체 지급',requestId:crypto.randomUUID()};
+  const both=await Promise.all([call('/api/teacher/command',payload,admin.token),call('/api/teacher/command',payload,admin.token)]);
+  assert.ok(both.every(r=>r.status===200&&r.count===2));
+  for(const student of [a,b])assert.equal((await call('/api/me',null,student.accessToken)).state.cash,1500000);
+  assert.equal(Number((await pool.query('SELECT count(*) FROM teacher_commands')).rows[0].count),2);
+  assert.equal((await call('/api/teacher/command',{...payload,amount:700000},admin.token)).status,409);
+  console.log('PASS: concurrent identical requests credit every student exactly once');
+  // Force the second account's update to fail after the first account was updated.
+  await pool.query(`ALTER TABLE students ADD CONSTRAINT injected_failure CHECK(id <> '${ids[1]}' OR (state->>'cash')::bigint <= 1500000)`);
+  assert.equal((await call('/api/teacher/command',{...payload,requestId:crypto.randomUUID()},admin.token)).status,500);
+  for(const student of [a,b])assert.equal((await call('/api/me',null,student.accessToken)).state.cash,1500000);
+  assert.equal(Number((await pool.query('SELECT count(*) FROM teacher_commands')).rows[0].count),2);
+  assert.equal((await call('/api/teacher/command',{studentIds:[],classCode:'CHECK1',includeFutureStudents:true,amount:500000,reason:'실패 검증',requestId:crypto.randomUUID()},admin.token)).status,500);
+  assert.equal(Number((await pool.query("SELECT initial_cash FROM classes WHERE code='CHECK1'")).rows[0].initial_cash),1000000);
+  await pool.query('ALTER TABLE students DROP CONSTRAINT injected_failure');
+  assert.equal((await call('/api/teacher/command',{...payload,studentIds:[a.studentId,crypto.randomUUID()],requestId:crypto.randomUUID()},admin.token)).status,403);
+  assert.equal((await call('/api/me',null,a.accessToken)).state.cash,1500000);
+  console.log('PASS: mid-batch failure rolls back all accounts and audit commands; missing account rejected');
+  const roster=await call('/api/teacher/students?classCode=CHECK1',null,admin.token);
+  assert.ok(roster.students.every(s=>s.profit===0&&s.profitRate===0));
+  const listing=await call('/api/stocks?q=&market=KONEX&limit=40');assert.ok(listing.total>0&&listing.items.length>0);
+  console.log('PASS: deposits are not investment profits; market browsing');
+  const classGrant={studentIds:[],classCode:'CHECK1',includeFutureStudents:true,amount:500000,reason:'나중 가입 포함',requestId:crypto.randomUUID()};
+  const grant=await call('/api/teacher/command',classGrant,admin.token);
+  assert.equal(grant.status,200);assert.equal(grant.count,2);
+  const late=await call('/api/auth/join',{classCode:'CHECK1',nickname:'늦은학생',pin:'0123'});
+  assert.equal(late.state.cash,1500000);
+  assert.equal((await call('/api/teacher/command',classGrant,admin.token)).count,2);
+  assert.equal((await call('/api/me',null,late.accessToken)).state.cash,1500000);
+  const cls=await pool.query('SELECT initial_cash FROM classes WHERE code=$1',['CHECK1']);assert.equal(Number(cls.rows[0].initial_cash),1500000);
+  // Enrollment and a new class grant must serialize on the class row.
+  const [concurrentJoin,concurrentGrant]=await Promise.all([
+    call('/api/auth/join',{classCode:'CHECK1',nickname:'동시학생',pin:'0123'}),
+    call('/api/teacher/command',{...classGrant,requestId:crypto.randomUUID()},admin.token)
+  ]);
+  assert.equal(concurrentGrant.status,200);
+  assert.equal((await call('/api/me',null,concurrentJoin.accessToken)).state.cash,2000000);
+  console.log('PASS: late enrollment and simultaneous enrollment receive class grant exactly once');
+  await call('/api/admin/classes',{code:'OTHER1',name:'다른 반'},admin.token);
+  const outsider=await call('/api/auth/join',{classCode:'OTHER1',nickname:'다른학생',pin:'0123'});
+  const teacherBody={id:'testteacher',name:'시험교사',password:'teacher-test-password',classCode:'CHECK1'};
+  assert.equal((await call('/api/admin/teachers',teacherBody,admin.token)).status,200);
+  const teacher=await call('/api/teacher/login',{id:teacherBody.id,password:teacherBody.password});assert.ok(teacher.token);
+  const before=(await call('/api/me',null,a.accessToken)).state.cash;
+  assert.equal((await call('/api/teacher/command',{...payload,studentIds:[a.studentId,outsider.studentId],requestId:crypto.randomUUID()},teacher.token)).status,403);
+  assert.equal((await call('/api/me',null,a.accessToken)).state.cash,before);
+  await call('/api/admin/teachers',{...teacherBody,classCode:'OTHER1'},admin.token);
+  assert.equal((await call('/api/teacher/students',null,teacher.token)).status,401);
+  assert.equal((await call('/api/admin/classes/CHECK1',{initialCash:-1},admin.token)).status,400);
+  assert.equal((await call('/api/teacher/command',{...payload,amount:0.5,requestId:crypto.randomUUID()},admin.token)).status,400);
+  console.log('PASS: cross-class authorization, teacher reassignment revokes stale token, invalid money rejected');
+}finally{
+  const stopped=new Promise(r=>child.once('exit',r));child.kill();await stopped;
+  await pool.end();await root.query(`DROP SCHEMA ${schema} CASCADE`);await root.end();
+}

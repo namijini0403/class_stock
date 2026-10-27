@@ -38,3 +38,6 @@ jobs:
       - run: npm run check
       - run: node scripts/smoke-db.mjs
       - run: node scripts/smoke-server.mjs
+      - run: npm run check:classroom
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/class_stock

@@ -57,8 +57,18 @@ function stockCard(s){
   const change=p?.price?`${changeText(p)} · ${Number(p.change||0)>=0?'+':''}${fmt(p.change)}`:'검색 가능한 상장 종목';
   return `<button type="button" class="stock-card ${blocked?'stock-blocked':''}" data-code="${esc(s.code)}"><div class="stock-head"><div><div class="stock-name">${esc(s.name)} ${status?`<span class="status-badge">${status}</span>`:''}</div><div class="stock-code">${esc(codeLabel(s))}</div></div><div class="stock-sector">${esc(marketKo(s.market))}</div></div><div class="stock-price">${primary}</div><div class="change ${changeClass(p?.changeRate||0)}">${status||change}</div><div class="stock-foot"><span>${esc(sourceText(p))}</span><span>${p?.delayed?'지연 데이터':''}</span></div></button>`
 }
-function renderMarket(){if(!displayedStocks.length){$('#stockGrid').innerHTML='<div class="card empty-card">검색 결과가 없습니다.</div>';return}$('#stockGrid').innerHTML=displayedStocks.map(stockCard).join('');document.querySelectorAll('.stock-card').forEach(x=>x.onclick=()=>openTrade(x.dataset.code));$('#searchMore').classList.toggle('hidden',displayedStocks.length>=searchTotal||!$('#search').value.trim())}
-async function searchStocks(reset=true){const q=$('#search').value.trim(),market=$('#marketFilter').value,fetchId=++searchFetchId;if(!q){displayedStocks=(config.popular||[]).filter(s=>marketMatch(s,market));searchTotal=displayedStocks.length;searchOffset=displayedStocks.length;renderMarket();refreshQuotes(displayedStocks.map(x=>x.code));$('#priceStatus').textContent=`국내 전체 ${Number(config.universe.count||0).toLocaleString()}개 종목에서 검색 가능`;return}if(reset){searchOffset=0;displayedStocks=[]}const d=await api(`/api/stocks?q=${encodeURIComponent(q)}&market=${encodeURIComponent(market)}&limit=40&offset=${searchOffset}`);if(fetchId!==searchFetchId)return;displayedStocks.push(...d.items);searchOffset=displayedStocks.length;searchTotal=d.total;renderMarket();$('#priceStatus').textContent=`검색 결과 ${d.total.toLocaleString()}개 · 종목을 누르면 시세 조회`}
+function renderMarket(){if(!displayedStocks.length){$('#stockGrid').innerHTML='<div class="card empty-card">검색 결과가 없습니다.</div>';return}$('#stockGrid').innerHTML=displayedStocks.map(stockCard).join('');document.querySelectorAll('.stock-card').forEach(x=>x.onclick=()=>openTrade(x.dataset.code));$('#searchMore').classList.toggle('hidden',displayedStocks.length>=searchTotal)}
+async function searchStocks(reset=true){
+  const q=$('#search').value.trim(),market=$('#marketFilter').value,fetchId=++searchFetchId;
+  if(reset){searchOffset=0;displayedStocks=[]}
+  const d=await api(`/api/stocks?q=${encodeURIComponent(q)}&market=${encodeURIComponent(market)}&limit=40&offset=${searchOffset}`);
+  if(fetchId!==searchFetchId)return;
+  for(const stock of d.items)stockCache.set(stock.code,stock);
+  displayedStocks.push(...d.items);searchOffset=displayedStocks.length;searchTotal=d.total;renderMarket();
+  $('#priceStatus').textContent=`${q?'검색 결과':'전체 종목'} ${d.total.toLocaleString()}개 · 종목을 누르면 시세 조회`;
+  refreshQuotes(d.items.map(x=>x.code));
+}
+
 async function refreshQuotes(codes){codes=[...new Set(codes.filter(Boolean))].slice(0,40);if(!codes.length)return;try{const d=await api(`/api/quotes?codes=${encodeURIComponent(codes.join(','))}`);for(const p of d.quotes||[])if(p&&!p.error)priceMap.set(p.code,p);renderStats();renderHome();renderMarket();renderPortfolio()}catch(e){console.warn(e.message)}}
 async function ensureStockInfo(codes){const missing=[...new Set(codes)].filter(c=>!stockCache.has(c));if(!missing.length)return;try{const d=await api(`/api/stocks/by-codes?codes=${encodeURIComponent(missing.join(','))}`);for(const x of d.items||[])stockCache.set(x.code,x)}catch{}}
 function renderHome(){
@@ -98,9 +108,9 @@ async function refreshMe(){const d=await api('/api/me');state=d.state;studentInf
 async function refreshHeldQuotes(){if(!state)return;const codes=Object.keys(state.holdings||{});if(!$('#search').value.trim())codes.push(...(config.popular||[]).map(x=>x.code));await refreshQuotes(codes)}
 
 async function join(){
-  const classCode=$('#classCode').value.trim().toUpperCase();
-  const nickname=$('#nickname').value.trim();
-  const pin=$('#pin').value;
+  const classCode=$('#classCode').value.normalize('NFKC').trim().toUpperCase();
+  const nickname=$('#nickname').value.normalize('NFC').trim();
+  const pin=$('#pin').value.normalize('NFKC').trim();
   if(!/^[A-Z0-9]{3,8}$/.test(classCode))return toast('학급 코드를 확인하세요. (영문 대문자·숫자 3~8자)');
   if(!nickname)return toast('닉네임을 입력하세요.');
   if(/\d{3,}/.test(nickname))return toast('닉네임에 3자리 이상 연속 숫자를 넣을 수 없어요. (개인정보 보호)');
@@ -291,7 +301,7 @@ async function init(){
   const refreshMs=Number(config?.marketData?.kr?.refreshMs||config?.marketDataRefreshMs||86_400_000),refreshMinutes=Math.round(refreshMs/60_000),refreshLabel=refreshMs===86_400_000?'하루 1회':`${refreshMinutes}분마다`;
   $('#priceStatus').textContent=`국내 ${Number(config.universe.count||0).toLocaleString()}개 종목 검색 가능 · 공공데이터 ${config?.marketData?.kr?.asOfDate?dateKo(config.marketData.kr.asOfDate):'준비 중'} · ${refreshLabel} 새 자료 확인 · 수수료 ${(Number(config.tradeFeeRate||0)*100).toFixed(3)}%`;
   renderMarket();
-  refreshQuotes(displayedStocks.map(x=>x.code));
+  await searchStocks();
 
   if(refreshToken){
     const cached=loadCsLogin();
