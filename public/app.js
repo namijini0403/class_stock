@@ -84,7 +84,7 @@ async function searchStocks(reset=true){
   for(const stock of d.items)stockCache.set(stock.code,stock);
   displayedStocks.push(...d.items);searchOffset=displayedStocks.length;searchTotal=d.total;renderMarket();
   $('#priceStatus').textContent=`${q?'검색 결과':'전체 종목'} ${d.total.toLocaleString()}개 중 ${displayedStocks.length.toLocaleString()}개 표시 · ${sort==='cap-asc'?'시가총액 작은 순':sort==='cap-desc'?'시가총액 큰 순':'이름 가나다순'}`;
-  $('#browseHint').textContent=sort==='name'?'이름을 몰라도 둘러볼 수 있어요. 아래 더 보기로 다음 종목을 확인하세요.':`국내 시가총액 확인 ${Number(d.knownMarketCaps||0).toLocaleString()}종목 · 자료가 없는 종목은 뒤에 표시합니다. 주가가 낮은 순이나 투자 추천 순위가 아닙니다.`;
+  $('#browseHint').textContent=sort==='name'?'이름을 몰라도 둘러볼 수 있어요. 아래 더 보기로 다음 종목을 확인하세요.':`국내 시가총액 확인 ${Number(d.knownMarketCaps||0).toLocaleString()}종목 · 자료가 없는 종목은 뒤에 표시합니다. 우선주도 포함하며, 주가가 낮은 순과는 달라요.`;
   refreshQuotes(d.items.map(x=>x.code));
 }
 
