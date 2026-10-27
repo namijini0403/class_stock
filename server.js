@@ -1084,7 +1084,7 @@ async function initDbWithRetry(){
 
 async function main(){
   server.listen(PORT,'0.0.0.0',()=>{
-    console.log(`\n우리학교 모의투자 v3.4.1: http://localhost:${PORT}`);
+    console.log(`\n우리학교 모의투자 v3.5.0: http://localhost:${PORT}`);
     console.log(`학생 화면: http://localhost:${PORT}/`);
     console.log(`교사 화면: http://localhost:${PORT}/teacher.html`);
     console.log('시세 모드: 국내 공공데이터 공식 지연 시세 (하루 1회 확인)');

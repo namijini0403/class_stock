@@ -154,6 +154,28 @@
         </div>
       </section>
 
+      <section id="tab-glossary" class="tabpage hidden" aria-labelledby="glossaryHeading">
+        <div class="page-heading"><h1 id="glossaryHeading">주식 용어 사전</h1><p>어려운 말도 하나씩! 뜻을 읽고 쉬운 예시로 익혀 봐요.</p></div>
+        <section class="glossary-intro" aria-labelledby="glossaryFirst">
+          <h2 id="glossaryFirst">처음엔 이 두 가지만 기억해요</h2>
+          <div class="glossary-flow-grid">
+            <div class="glossary-flow"><h3>매수 = 사기</h3><div class="glossary-flow-picture" role="img" aria-label="주식을 사면 내 현금은 줄고, 내 주식은 늘어요"><span><span aria-hidden="true">💰</span> 내 현금<br><b>줄어들어요 ↓</b></span><span aria-hidden="true">→</span><span><span aria-hidden="true">📄</span> 내 주식<br><b>늘어나요 ↑</b></span></div><p>1,000원을 내고 주식 1주를 받아요.</p></div>
+            <div class="glossary-flow"><h3>매도 = 팔기</h3><div class="glossary-flow-picture" role="img" aria-label="주식을 팔면 내 주식은 줄고, 내 현금은 늘어요"><span><span aria-hidden="true">📄</span> 내 주식<br><b>줄어들어요 ↓</b></span><span aria-hidden="true">→</span><span><span aria-hidden="true">💰</span> 내 현금<br><b>늘어나요 ↑</b></span></div><p>가지고 있던 주식 1주를 주고 돈을 받아요.</p></div>
+          </div><p class="glossary-small">그림은 수수료를 빼고 설명했어요. 실제 앱 주문에서는 수수료도 확인해요.</p>
+        </section>
+        <section class="glossary-demo" aria-labelledby="glossaryDemoTitle">
+          <h2 id="glossaryDemoTitle">가격이 바뀌면 어떻게 될까요?</h2>
+          <p>1주에 1,000원인 주식 <strong>2주</strong>를 샀어요. 총 2,000원을 썼죠. 지금 가격을 골라 보세요.</p>
+          <div class="glossary-demo-buttons" role="group" aria-label="연습용 현재 주가"><button type="button" data-demo-price="800" aria-pressed="false">800원으로 하락</button><button type="button" data-demo-price="1000" aria-pressed="false">1,000원 그대로</button><button type="button" data-demo-price="1200" aria-pressed="false">1,200원으로 상승</button></div>
+          <p id="glossaryDemoResult" class="glossary-demo-result" role="status">버튼을 누르면 평가손익과 수익률을 보여 줘요. 내 계좌의 돈이나 주식은 바뀌지 않아요.</p>
+        </section>
+        <label class="glossary-search-label" for="glossarySearch">궁금한 용어 찾기</label><input id="glossarySearch" class="search-input glossary-search" type="search" placeholder="예: 매수, 코스닥, 수익률" autocomplete="off" />
+        <div id="glossaryCategories" class="glossary-categories" role="group" aria-label="용어 주제"></div>
+        <p id="glossaryCount" class="glossary-small" role="status"></p>
+        <div id="glossaryCards" class="glossary-cards"></div>
+        <aside class="glossary-sources"><p>공식 시장 안내도 살펴볼까요?</p><a href="https://www.krx.co.kr/main/main.jsp" target="_blank" rel="noopener noreferrer">한국거래소</a> · <a href="https://open.krx.co.kr/contents/OPN/01/01010301/OPN01010301.jsp" target="_blank" rel="noopener noreferrer">코넥스시장 소개</a><p>설명은 수업에 맞게 쉽게 풀어 썼어요. 실제 제도와 주식의 종류에 따라 세부 내용은 다를 수 있어요.</p></aside>
+      </section>
+
       <section id="tab-settings" class="tabpage hidden">
         <div class="page-heading"><h1>MY</h1><p>학급 정보를 확인하고 로그아웃할 수 있습니다. 학생 투자 내역은 학교 서버의 계정에 안전하게 저장됩니다.</p></div>
 
@@ -185,6 +207,7 @@
         <button class="tab" data-tab="market"><span class="nav-glyph nav-search"></span><span>주식</span></button>
         <button class="tab" data-tab="portfolio"><span class="nav-glyph nav-wallet"></span><span>자산</span></button>
         <button class="tab" data-tab="history"><span class="nav-glyph nav-list"></span><span>기록</span></button>
+        <button class="tab" data-tab="glossary"><span class="nav-glyph nav-book" aria-hidden="true">▤</span><span>용어</span></button>
         <button class="tab" data-tab="settings"><span class="nav-glyph nav-user"></span><span>MY</span></button>
       </nav>
     </section>
@@ -265,6 +288,7 @@
     </div>
   </dialog>
 
+  <script src="/glossary.js"></script>
   <script src="/daily-chart.js"></script>
   <script src="/app.js"></script>
 </body>
